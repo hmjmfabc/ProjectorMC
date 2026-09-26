@@ -52,8 +52,9 @@ logs_copy/
 !/tmp/v*/T*.java
 !/tmp/v*/FrameCount.java
 !/tmp/v*/sample.mjpg
-# 会话导出与根目录散落的字体副本
+# 会话导出与根目录散落的字体副本（构建只读 src/main/resources 下的那份）
 dsh-session-*.zip
+/minecraft.ttf
 /caviar_dreams.ttf
 # 内部交接文档（含本机绝对路径与调试细节，不放进公开仓库）
 AGENTS.md
