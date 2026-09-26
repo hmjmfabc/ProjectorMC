@@ -1,0 +1,20 @@
+投影仪 / Projector
+Copyright 2026 Hmjmfabc
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Homepage: https://github.com/hmjmfabc/ProjectorMC
+
+Bundled third-party components
+------------------------------
+* JCodec 0.2.5 — https://jcodec.org/ — FreeBSD (BSD 2-Clause) License.
+  Embedded in the released jar as META-INF/jarjar/jcodec-0.2.5.jar (via NeoForge jarJar).
+* Fonts shipped in assets/projector/font/ (minecraft.ttf, caviar_dreams.ttf)
+  are the property of their respective authors and are not covered by
+  the Apache License of this project. Verify their terms before redistributing.
+* Minecraft, NeoForge and their logos are trademarks of their respective owners.
+  This mod is not affiliated with, endorsed by, or sponsored by Mojang or Microsoft.
+
+Credits
+-------
+Written with DeepSeek v4.1 Flash and DeepSeek Harness.
+Inspired by the in-level percentage markers of the games Dancing Line and Through The Fog.

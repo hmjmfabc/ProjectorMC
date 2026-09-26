@@ -1,0 +1,67 @@
+### Gradle ###
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/**/build/
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/**/out/
+
+.run/
+
+### Eclipse ###
+.apt_generated
+.classpath
+.eclipse/
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/**/bin/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### Minecraft Modding ###
+run/
+!**/src/**/run/
+**/src/generated/**/.cache/
+repo/
+!**/src/**/repo/
+
+### 投影仪 / Projector（本工作区特有）###
+# 运行期日志与日志副本：含玩家名/UUID/IP，绝不入库
+logs/
+logs_copy/
+# 临时验证 / 反编译 / 构建脚本产物：只放行纯逻辑验证脚本与其素材
+/tmp/*
+!/tmp/run-verify.sh
+!/tmp/run-all.sh
+!/tmp/v*/
+/tmp/v*/*
+!/tmp/v*/T*.java
+!/tmp/v*/FrameCount.java
+!/tmp/v*/sample.mjpg
+# 会话导出与根目录散落的字体副本
+dsh-session-*.zip
+/caviar_dreams.ttf
+# 内部交接文档（含本机绝对路径与调试细节，不放进公开仓库）
+AGENTS.md
+HANDOVER.md
+LESSONS.md
+TODO_NEXT.md
+*.bak
+# 第三方字体资源：Minecraft 自带字体（Mojang 资产）与 Caviar Dreams 版权归各自作者，
+# 仓库不再分发；构建前请自行放入 src/main/resources/assets/projector/font/
+/src/main/resources/assets/projector/font/minecraft.ttf
+/src/main/resources/assets/projector/font/caviar_dreams.ttf
