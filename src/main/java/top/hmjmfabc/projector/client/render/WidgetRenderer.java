@@ -125,6 +125,8 @@ public final class WidgetRenderer {
                     (top.hmjmfabc.projector.common.widget.LeaderboardWidget) w);
             case Widget.KIND_CHESS -> drawChess(collector, ctx,
                     (top.hmjmfabc.projector.common.widget.ChessWidget) w);
+            case Widget.KIND_MUSIC -> MusicWidgetRenderer.draw(collector, plane, ctx,
+                    (top.hmjmfabc.projector.common.widget.MusicWidget) w);
             default -> {
             }
         }

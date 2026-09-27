@@ -211,6 +211,7 @@ public class CanvasWidgetView extends AbstractWidget {
             case Widget.KIND_CLOCK -> 0x55AAAAFF;
             case Widget.KIND_WEATHER -> 0x55FFDD33;
             case Widget.KIND_PROGRESS -> 0x55FF44AA;
+            case Widget.KIND_MUSIC -> 0x554FC3F7;
             default -> 0x55FFFFFF;
         };
         gfx.fill(x0, y0, x1, y1, fill);

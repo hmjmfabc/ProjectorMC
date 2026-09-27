@@ -32,6 +32,8 @@ public final class ProjectorConfig {
     public final ModConfigSpec.IntValue uploadChunkBytes;
     public final ModConfigSpec.IntValue maxDecodedImageSize;
     public final ModConfigSpec.IntValue videoFrameCacheFrames;
+    /** 【27.1.1】所有视频帧槽位的总内存预算（MB），跨媒体生效。 */
+    public final ModConfigSpec.IntValue videoMaxFrameMemoryMb;
     public final ModConfigSpec.IntValue maxVideoFps;
     public final ModConfigSpec.IntValue maxMediaPerWorld;
 
@@ -70,6 +72,20 @@ public final class ProjectorConfig {
     public final ModConfigSpec.IntValue convertQuality;
 
     // ---- 渲染 ----
+    // ---- 音乐控件（27.1.1 新增）----
+    /** 音量倍率（0~1）。 */
+    public final ModConfigSpec.DoubleValue musicVolume;
+    /** 听不见的距离（方块）。 */
+    public final ModConfigSpec.IntValue musicHearDistance;
+    /** 同时最多播放几首（超过时新的会顶掉旧的）。 */
+    public final ModConfigSpec.IntValue musicMaxConcurrent;
+    /** 网易云搜索返回条数。 */
+    public final ModConfigSpec.IntValue musicSearchLimit;
+    /** HTTP 代理（host:port），留空 = 直连。 */
+    public final ModConfigSpec.ConfigValue<String> musicProxyAddress;
+    /** 网易云 Cookie（可选，填了才能拿到高码率/VIP 歌曲）。 */
+    public final ModConfigSpec.ConfigValue<String> musicNeteaseCookie;
+
     public final ModConfigSpec.IntValue renderDistance;
     public final ModConfigSpec.IntValue glyphCachePages;
     public final ModConfigSpec.IntValue atlasPageSize;
@@ -120,6 +136,9 @@ public final class ProjectorConfig {
                 .defineInRange("maxDecodedImageSize", 1024, 64, 4096);
         videoFrameCacheFrames = b.comment("视频解码帧缓存数量（每帧约为 边长^2*4 字节显存）。")
                 .defineInRange("videoFrameCacheFrames", 12, 2, 48);
+        videoMaxFrameMemoryMb = b.comment("所有视频帧槽位的总内存预算（MB）。同时画多个视频时按此上限分摊，"
+                        + "避免槽位总占用失控（每个槽位同时占一份像素缓冲与一份显存）。")
+                .defineInRange("videoMaxFrameMemoryMb", 64, 8, 1024);
         maxVideoFps = b.comment("视频播放帧率上限。")
                 .defineInRange("maxVideoFps", 20, 1, 60);
         maxMediaPerWorld = b.comment("存档内允许保存的媒体文件数量上限。")
@@ -214,6 +233,26 @@ public final class ProjectorConfig {
                 .defineInRange("maxSide", 512, 64, 2048);
         convertQuality = b.comment("MJPEG 画质，1（最好/最大）~ 31（最差/最小），对应 ffmpeg 的 -q:v。")
                 .defineInRange("quality", 5, 1, 31);
+        b.pop();
+
+        b.comment("音乐控件（本地音频 / 网易云音乐）").push("music");
+        musicVolume = b.comment("音量倍率（0~1）。还会再乘上游戏「唱片机/音符盒」那一档的音量设置。")
+                .defineInRange("volume", 0.8, 0.0, 1.0);
+        musicHearDistance = b.comment("多远之后听不见（方块）。音乐是**世界里的声源**，\n"
+                        + "离得越远越轻，超过这个距离就完全听不到。")
+                .defineInRange("hearDistance", 32, 4, 256);
+        musicMaxConcurrent = b.comment("本客户端同时最多播放几首音乐（默认 1）。\n"
+                        + "同一时刻有多个音乐控件在放时，超出的部分不会出声（也不会去下载）。")
+                .defineInRange("maxConcurrent", 1, 1, 8);
+        musicSearchLimit = b.comment("网易云关键字搜索一次返回多少条（1~30）。")
+                .defineInRange("searchLimit", 10, 1, 30);
+        musicProxyAddress = b.comment("音乐模块用的 HTTP 代理，格式 host:port；留空 = 直连。\n"
+                        + "只影响音乐（网易云接口与音频下载），不影响游戏本体。")
+                .define("proxyAddress", "");
+        musicNeteaseCookie = b.comment("网易云 Cookie（可选）。留空时是游客态：\n"
+                        + "免费歌曲可以正常播放，VIP/高码率歌曲会失败（会给出提示）。\n"
+                        + "填法：浏览器登录 music.163.com 后复制整条 Cookie（含 MUSIC_U=...）。")
+                .define("neteaseCookie", "");
         b.pop();
 
         b.comment("渲染相关").push("render");

@@ -91,6 +91,11 @@ public final class Widgets {
                 w.w = cols * ChessWidget.CELL_UNITS;
                 w.h = rows * ChessWidget.CELL_UNITS;
             }
+            case Widget.KIND_MUSIC -> {
+                // 「语音条」的长宽比：一行播放键 + 波形 + 时间，太扁了不好点、太高了占地方
+                w.w = 112;
+                w.h = 20;
+            }
             default -> {
                 w.w = 32;
                 w.h = 32;

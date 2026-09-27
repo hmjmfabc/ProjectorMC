@@ -38,5 +38,6 @@
   "projector.msg.chess_hint": "§7棋类游戏：右键控件 → 编辑 → 「打开对局界面…」即可下棋（六种棋共用这一个入口）",
   "projector.msg.chess_pick": "§7先点一个自己的棋子，再点目标格",
   "projector.msg.chess_illegal": "§c这一步不合法",
-  "projector.msg.chess_ai_turn": "§7AI 正在思考…"
+  "projector.msg.chess_ai_turn": "§7AI 正在思考…",
+  "projector.msg.music_no_track": "§c这个音乐控件还没有选择歌曲（先在编辑器里点「选择音乐…」）"
 }

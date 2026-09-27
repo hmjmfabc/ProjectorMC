@@ -38,5 +38,6 @@
   "projector.msg.chess_hint": "§7Board games: right-click the widget -> Edit -> \"Open game screen\" to play (all six games share this entry).",
   "projector.msg.chess_pick": "§7Click one of your pieces, then click the target square.",
   "projector.msg.chess_illegal": "§cIllegal move",
-  "projector.msg.chess_ai_turn": "§7AI is thinking..."
+  "projector.msg.chess_ai_turn": "§7AI is thinking...",
+  "projector.msg.music_no_track": "§cNo song selected yet (use \"Choose music...\" in the editor)"
 }

@@ -8,11 +8,39 @@ Bundled third-party components
 ------------------------------
 * JCodec 0.2.5 — https://jcodec.org/ — FreeBSD (BSD 2-Clause) License.
   Embedded in the released jar as META-INF/jarjar/jcodec-0.2.5.jar (via NeoForge jarJar).
+  Used by the video converter (MP4/H.264 -> MJPEG).
+* Audio decoders, used **only** by the music widget (see "Music module" below).
+  They are embedded unmodified as separate jars in META-INF/jarjar/ and can be
+  replaced individually, which is what the LGPL permits for a work that uses the library:
+  - mp3spi 1.9.5.4, jlayer 1.0.1.4, tritonus-share 0.3.7.4 (MP3)
+    — JavaZOOM, GNU LGPL 2.1. https://www.javazoom.net/
+  - jflac-codec 1.5.3 (FLAC) — Josh Coalson / jFLAC project, BSD-style license.
+  None of these libraries are modified, and none of their source is copied into
+  this project's own source tree.
 * Fonts shipped in assets/projector/font/ (minecraft.ttf, caviar_dreams.ttf)
   are the property of their respective authors and are not covered by
   the Apache License of this project. Verify their terms before redistributing.
 * Minecraft, NeoForge and their logos are trademarks of their respective owners.
   This mod is not affiliated with, endorsed by, or sponsored by Mojang or Microsoft.
+
+Music module
+-------------
+The music widget's playback engine (audio stream decoding, HTTP range streaming,
+ID3 skipping, NetEase Cloud Music API calls and LRC lyric parsing) is derived from
+**Net Music Mod / 网络音乐机** by TartaricAcid and contributors
+(https://github.com/TartaricAcid/NetMusic), which is published under the MIT License.
+Files derived from it live in
+src/main/java/top/hmjmfabc/projector/client/music/ and in the music branch of
+client/gui/MusicPickerScreen.java.
+
+Supported audio formats are MP3 / FLAC / WAV. **AAC/M4A is intentionally not supported**:
+its decoder (javasound-aac) declares the same packages as the JAAD classes bundled inside
+JCodec, and two jar-in-jar libraries exporting the same JPMS package make ModLauncher fail
+during startup (java.lang.module.ResolutionException). The music module works without it.
+
+Only the music module references that project: every other part of this mod
+(planes, widgets, rendering, media transfer, games, sequences, fonts) was written
+independently and shares no code with it.
 
 Credits
 -------

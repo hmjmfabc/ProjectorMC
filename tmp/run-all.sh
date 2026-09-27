@@ -38,5 +38,7 @@ pkg v23 top.hmjmfabc.projector.client.media.T23
 pkg v24 top.hmjmfabc.projector.client.media.T24
 pkg v25 top.hmjmfabc.projector.client.media.T25
 pkg v26 top.hmjmfabc.projector.client.media.T26
+pkg v27 top.hmjmfabc.projector.client.media.T27
+pkg v28 top.hmjmfabc.projector.client.music.T28
 
 echo "--- 失败套件数: $fail ---"

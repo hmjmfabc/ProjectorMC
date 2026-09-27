@@ -754,6 +754,28 @@ public final class ServerNetHandler {
                             + "（原尺寸超出平面，超出的点位右键打不到）", plane.width, plane.height);
                 }
             }
+            case Widget.KIND_MUSIC -> {
+                // 【音乐控件】只夹数值，不碰播放状态（播放状态由 toggle 动作改）
+                var mw = (top.hmjmfabc.projector.common.widget.MusicWidget) w;
+                mw.fontSize = Sanitize.clamp(mw.fontSize, 0.5, 256, 9);
+                mw.corner = Sanitize.clamp(mw.corner, 0, 64, 5);
+                mw.volume = Sanitize.clamp(mw.volume, 0, 1, 0.8);
+                mw.barCount = (int) Sanitize.clamp(mw.barCount, 0, 256, 0);
+                if (mw.sourceKey == null || mw.sourceKey.length() > 512) {
+                    mw.sourceKey = mw.sourceKey == null ? "" : mw.sourceKey.substring(0, 512);
+                }
+                if (mw.title != null && mw.title.length() > 256) {
+                    mw.title = mw.title.substring(0, 256);
+                }
+                if (mw.artist != null && mw.artist.length() > 256) {
+                    mw.artist = mw.artist.substring(0, 256);
+                }
+                if (mw.sourceKind == null || mw.sourceKind.isBlank()) {
+                    mw.sourceKind = "LOCAL";
+                }
+                mw.durationMs = (long) Sanitize.clamp(mw.durationMs, 0, 24 * 3600_000L, 0);
+                mw.positionMs = (long) Sanitize.clamp(mw.positionMs, 0, 24 * 3600_000L, 0);
+            }
             case Widget.KIND_LEADERBOARD -> {
                 var lw = (top.hmjmfabc.projector.common.widget.LeaderboardWidget) w;
                 lw.titleSize = Sanitize.clamp(lw.titleSize, 0.5, 256, 10);
@@ -1427,7 +1449,51 @@ public final class ServerNetHandler {
                 return;
             }
 
-            if (!(w instanceof ProgressWidget progress)) return;
+            // 【27.1.1】音乐控件：世界里点播放键 → 服务端翻转状态并广播。
+        // 状态放在控件数据里（playing + startedGameTime），所以所有客户端都能算出
+        // 同一个播放位置，晚进来的玩家也能对上进度。
+        if (w instanceof top.hmjmfabc.projector.common.widget.MusicWidget music) {
+            switch (payload.action()) {
+                case "toggle" -> music.toggle(now);
+                case "seek" -> {
+                    // 按比例跳进度：位置写进控件数据（服务端权威），播放中则重锚时间点
+                    double fraction = Sanitize.clamp(
+                            payload.args() == null ? 0 : payload.args().getDouble("fraction"), 0, 1, 0);
+                    music.positionMs = (long) (fraction * music.effectiveDurationMs());
+                    if (music.playing) {
+                        music.startedGameTime = now;
+                    }
+                }
+                case "stop" -> {
+                    music.positionMs = 0L;
+                    music.playing = false;
+                }
+                case "pause" -> {
+                    if (music.playing) {
+                        music.toggle(now);
+                    }
+                }
+                case "resume" -> {
+                    if (!music.playing && music.hasTrack()) {
+                        music.toggle(now);
+                    }
+                }
+                default -> {
+                    // 不静默：动作名写错要能查出来（现有两个 default 都是静默 return，
+                    // 这里不再新增同类问题）
+                    Projector.LOGGER.warn("[Projector] 音乐控件收到未知动作：{}（平面 {} 控件 {}）",
+                            payload.action(), plane.id, payload.widgetId());
+                    return;
+                }
+            }
+            data.markDirty();
+            broadcastPlane(level, plane);
+            Projector.LOGGER.info("[Projector][音乐] 服务端翻转播放状态 平面={} 控件={} 现在是{}（位置 {}ms）",
+                    plane.id, music.id, music.playing ? "播放中" : "已暂停", music.positionMs);
+            return;
+        }
+
+        if (!(w instanceof ProgressWidget progress)) return;
             switch (payload.action()) {
                 case "reset" -> progress.reset(now);
                 case "pause" -> progress.pause(now);

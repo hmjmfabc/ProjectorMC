@@ -47,6 +47,9 @@ public final class ProjectorClient {
         NeoForge.EVENT_BUS.addListener(top.hmjmfabc.projector.client.gui.ProjectorHud::onRenderGui);
         NeoForge.EVENT_BUS.addListener(this::onLogin);
         NeoForge.EVENT_BUS.addListener(this::onLogout);
+        // 【27.1.1】音乐控件的每 tick 调度（该不该出声、续播、音量跟随）
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.client.event.ClientTickEvent.Post event) ->
+                top.hmjmfabc.projector.client.music.MusicManager.tick());
     }
 
     private void clientSetup(FMLClientSetupEvent event) {
@@ -231,7 +234,7 @@ public final class ProjectorClient {
                         + "｜【本模组占用】渲染={}ms 上传={}ms 最久单次={}｜工作线程 解码={}ms 填帧={}ms"
                         + "｜这一秒上传帧={} 填帧={} 丢弃过时帧={} 待上传={} 保护窗跳过={}"
                         + "｜槽位={}(累计建 {}) 保护窗={}ms 帧索引={} 在途下载={} 视频数={}"
-                        + "｜素材扫描[{}]｜堆={}MB/{}MB GC[{}]",
+                        + "｜素材扫描[{}]｜内存[{}]｜堆={}MB/{}MB GC[{}]",
                 gap, stallCount,
                 myRenderMs, mainMs, top.hmjmfabc.projector.client.media.MediaCache.maxMainOp(),
                 decMs, fillMs,
@@ -242,6 +245,8 @@ public final class ProjectorClient {
                 // 【rc-88】扫描耗时必须出现在卡顿行里：rc-86/87 两轮里「渲染=1013ms」
                 // 把所有注意力都引到了渲染代码上，而时间其实花在渲染调用里的一次目录扫描上。
                 top.hmjmfabc.projector.client.media.LocalMedia.scanReport(),
+                // 【27.1.1】把「谁在吃内存」拆开写进卡顿行（图片纹理 / 视频帧槽位 / 下载缓冲）
+                top.hmjmfabc.projector.client.media.MediaCache.memoryReport(),
                 heapUsedMb, heapMaxMb, gc);
         lastUploadedFrames = uploaded;
     }
@@ -260,9 +265,15 @@ public final class ProjectorClient {
         // 否则存档里的图片/视频会一直显示成「媒体未就绪」，
         // 玩家只能靠重新编辑控件、重选一次素材来救。
         MediaCache.resetFailures();
+        // 【27.1.1】进世界时记一条内存基线：以后对比「这一局涨了多少」不用猜
+        Projector.LOGGER.info("[Projector][客户端] 媒体内存基线：{}｜音乐[{}]",
+                top.hmjmfabc.projector.client.media.MediaCache.memoryReport(),
+                top.hmjmfabc.projector.client.music.MusicManager.describeCache());
     }
 
     private void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+        // 【27.1.1】退出世界必须停音乐并清缓存：否则声道会被一直占着，下一局还在响
+        top.hmjmfabc.projector.client.music.MusicManager.clearAll();
         PlaneCache.clear();
         SelectionState.clear();
         MediaCache.clearAll();

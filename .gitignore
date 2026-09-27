@@ -52,6 +52,8 @@ logs_copy/
 !/tmp/v*/T*.java
 !/tmp/v*/FrameCount.java
 !/tmp/v*/sample.mjpg
+# 与本模组无关、恰好放在构建工作区里的其它项目目录（绝不能被 git add -A 扫进本仓库）
+/NetMusic-1.21/
 # 会话导出与根目录散落的字体副本（构建只读 src/main/resources 下的那份）
 dsh-session-*.zip
 /minecraft.ttf
@@ -62,6 +64,10 @@ HANDOVER.md
 LESSONS.md
 TODO_NEXT.md
 *.bak
+# 音乐控件的两个第三方解码库（jflac-codec=BSD、javasound-aac=LGPL-2.1）：
+# 与字体同理，源码仓库不分发二进制，构建前自行放进 libs/（mp3spi 由 Gradle 从
+# Maven Central 自动下载，不需要手动放）。详见 NOTICE 与 README「从源码构建」。
+/libs/
 # 第三方字体资源：Minecraft 自带字体（Mojang 资产）与 Caviar Dreams 版权归各自作者，
 # 仓库不再分发；构建前请自行放入 src/main/resources/assets/projector/font/
 /src/main/resources/assets/projector/font/minecraft.ttf

@@ -19,7 +19,7 @@ description='''
 万物皆屏幕！
 
 投影仪（Projector）让你可以在任何平面（完整方块墙、铁砧顶面、工作台侧面……）上
-粘贴图片、播放视频、书写任意字体的文字，并在其上摆放各种特殊控件：
+粘贴图片、播放视频、书写任意字体的文字、播放音乐，并在其上摆放各种特殊控件：
 时钟、天气、百分比进度。
 
 文字与图片的大小可无极调节、方向可任意摆放，操作方式接近 P 图与视频剪辑。
@@ -29,9 +29,16 @@ description='''
 · 支持自定义字体导入（把 .ttf 放进 .minecraft/projector/fonts/）；
 · 文本支持 & 格式化代码（&4 深红、&l 粗体，&& 表示字面 &）与调色盘；
 · 图片 / 视频从 .minecraft/projector/media/ 导入，视频使用 MJPEG 或 ZIP 帧序列；
+· 音乐控件支持本地音频（MP3 / FLAC / M4A）与网易云音乐（按歌曲 ID、链接或关键字搜索），
+  世界里直接点播放键即可启停（无需选中平面）；
 · 内容保护、创建者转让/删除，管理员与创建者分级权限；
 · 完整支持 Android（触控启动器）与低配设备。
 '''
+
+# 音乐控件需要直接向游戏的音频引擎借一条流式声道
+#（SoundManager.soundEngine / SoundEngine.channelAccess / SoundEngine.library）
+[[accessTransformers]]
+    file="META-INF/accesstransformer.cfg"
 
 [[dependencies.${mod_id}]]
 modId="neoforge"

@@ -27,9 +27,12 @@ public abstract class Widget {
     /** 【⑪】棋类游戏（井字棋/五子棋/象棋/围棋/军棋/国际象棋）。 */
     public static final int KIND_CHESS = 8;
 
+    /** 【27.1.1】音乐控件（本地音频 / 网易云音乐）。 */
+    public static final int KIND_MUSIC = 9;
+
     public static final String[] KIND_IDS = {
             "text", "image", "video", "clock", "weather", "progress", "timer", "leaderboard",
-            "chess"};
+            "chess", "music"};
 
     public UUID id = UUID.randomUUID();
     /** 锚点（左下角）在画布中的坐标。 */
@@ -201,6 +204,7 @@ public abstract class Widget {
             case KIND_TIMER -> new TimerWidget();
             case KIND_LEADERBOARD -> new LeaderboardWidget();
             case KIND_CHESS -> new ChessWidget();
+            case KIND_MUSIC -> new MusicWidget();
             default -> null;
         };
     }

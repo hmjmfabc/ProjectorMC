@@ -36,7 +36,7 @@ public class AddWidgetScreen extends ProjectorScreen {
         int w = 200;
         panelW = w;
         // 特殊控件展开后多了一行（排行榜 / 计时器），面板高度跟着加
-        panelH = specialExpanded ? 220 : 168;
+        panelH = specialExpanded ? 244 : 192;
         panelX = (this.width - w) / 2;
         panelY = Math.max(4, (this.height - panelH) / 2);
         int x = panelX;
@@ -51,6 +51,10 @@ public class AddWidgetScreen extends ProjectorScreen {
         y += 24;
         var videoBtn = button("\u65b0\u589e\u89c6\u9891", x + 12, y, w - 24, 20, b -> add(Widget.KIND_VIDEO));
         videoBtn.active = !incomplete;
+        y += 24;
+        // 【27.1.1】音乐控件与文本/图片/视频并列（它不是「特殊控件」）
+        var musicBtn = button("\u65b0\u589e\u97f3\u4e50", x + 12, y, w - 24, 20, b -> add(Widget.KIND_MUSIC));
+        musicBtn.active = !incomplete;
         y += 24;
 
         if (specialExpanded) {
@@ -133,6 +137,21 @@ public class AddWidgetScreen extends ProjectorScreen {
         PlaneDialogScreen.sendFor(plane, "addWidget", t);
 
         // 图片/视频先选文件，选中后再建立控件
+        if (kind == Widget.KIND_MUSIC) {
+            // 与图片/视频同一套流程：控件先建出来（服务端已收到 addWidget），
+            // 选好音乐后再发一条 updateWidget 把内容填进去；什么都没选就自动删掉。
+            Minecraft.getInstance().setScreen(new MusicPickerScreen(this, plane, w, track -> {
+                var mw = (top.hmjmfabc.projector.common.widget.MusicWidget) w;
+                top.hmjmfabc.projector.client.music.MusicTrack.applyTo(mw, track);
+                CompoundTag data = new CompoundTag();
+                data.putUUID("widget", mw.id);
+                data.put("data", mw.save());
+                PlaneDialogScreen.sendFor(plane, "updateWidget", data);
+                top.hmjmfabc.projector.client.music.MusicManager.onTrackChanged(plane, mw);
+                Minecraft.getInstance().setScreen(new WidgetEditorScreen(plane, w, parent));
+            }));
+            return;
+        }
         if (kind == Widget.KIND_IMAGE || kind == Widget.KIND_VIDEO) {
             Minecraft.getInstance().setScreen(new MediaPickerScreen(parent, plane, kind == Widget.KIND_VIDEO, w));
         } else {

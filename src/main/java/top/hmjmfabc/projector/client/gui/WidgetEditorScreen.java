@@ -19,6 +19,7 @@ import top.hmjmfabc.projector.common.text.FormatCodes;
 import top.hmjmfabc.projector.common.widget.ClockWidget;
 import top.hmjmfabc.projector.common.widget.Fonts;
 import top.hmjmfabc.projector.common.widget.ImageWidget;
+import top.hmjmfabc.projector.common.widget.MusicWidget;
 import top.hmjmfabc.projector.common.widget.ProgressWidget;
 import top.hmjmfabc.projector.common.widget.TextWidget;
 import top.hmjmfabc.projector.common.widget.VideoWidget;
@@ -337,6 +338,8 @@ public class WidgetEditorScreen extends ProjectorScreen {
             y = leaderboardBranch(lb, cx, y, cw);
         } else if (widget instanceof top.hmjmfabc.projector.common.widget.ChessWidget ch) {
             y = chessBranch(ch, cx, y, cw);
+        } else if (widget instanceof MusicWidget mw) {
+            y = musicBranch(mw, cx, y, cw);
         }
 
         // 底部按钮
@@ -803,6 +806,12 @@ public class WidgetEditorScreen extends ProjectorScreen {
             previewMessage = "\u5df2\u63d2\u5165\u53cc\u8272\u6e10\u53d8 " + code;
             return;
         }
+        // 【27.1.1】音乐控件：调色盘改的是「进度色」（波形已放部分 + 播放键图形）
+        if (target instanceof MusicWidget mw) {
+            mw.accentColor = argb;
+            previewMessage = "\u97f3\u4e50\u8fdb\u5ea6\u8272 " + hex6(argb);
+            return;
+        }
         // 【③b】排行榜：调色盘改的是「当前编辑的那一部分」的颜色
         if (target instanceof top.hmjmfabc.projector.common.widget.LeaderboardWidget lb) {
             setLbColor(lb, argb);
@@ -1168,6 +1177,79 @@ public class WidgetEditorScreen extends ProjectorScreen {
         gfx.fill(vx, vy, vx + vw, vy + 1, PANEL_BORDER);
     }
 
+    /**
+     * 音乐控件专用的编辑区（27.1.1）。
+     *
+     * <p>能改的东西：歌（打开音乐选择器）、音量、圆角、字号、颜色，以及
+     * 「世界里点播放键就能启停」这个交互之外的手动控制按钮。</p>
+     */
+    private int musicBranch(MusicWidget mw, int cx, int y, int cw) {
+        String name = mw.title == null || mw.title.isBlank() ? "（未选择音乐）" : mw.title;
+        if (mw.artist != null && !mw.artist.isBlank()) {
+            name = name + " - " + mw.artist;
+        }
+        button("\u9009\u62e9\u97f3\u4e50\uff1a" + shorten(name, 18), cx + 4, y, cw - 8, 20, b ->
+                openChild(new MusicPickerScreen(this, plane, mw, track -> {
+                    top.hmjmfabc.projector.client.music.MusicTrack.applyTo(mw, track);
+                    top.hmjmfabc.projector.client.music.MusicManager.onTrackChanged(plane, mw);
+                    CompoundTag t = new CompoundTag();
+                    t.putUUID("widget", mw.id);
+                    t.put("data", mw.save());
+                    PlaneDialogScreen.sendFor(plane, "updateWidget", t);
+                    rebuildWidgets();
+                })));
+        y += 24;
+
+        if (y + 22 <= bottomLimit) {
+            button(mw.playing ? "\u6682\u505c\uff08\u4e16\u754c\u91cc\u70b9\u64ad\u653e\u952e\u4e5f\u884c\uff09"
+                            : "\u5f00\u59cb\u64ad\u653e\uff08\u4e16\u754c\u91cc\u70b9\u64ad\u653e\u952e\u4e5f\u884c\uff09",
+                    cx + 4, y, cw - 8, 18, b -> {
+                CompoundTag extra = new CompoundTag();
+                sendAction(mw.playing ? "pause" : "resume", extra);
+            });
+            y += 22;
+        }
+
+        y = sliderRow(cx, y, cw, "\u64ad\u653e\u8fdb\u5ea6", 0.0, 1.0, mw.progressAt(
+                top.hmjmfabc.projector.client.music.MusicManager.gameTime()), false, v -> {
+            CompoundTag extra = new CompoundTag();
+            extra.putDouble("fraction", v);
+            sendAction("seek", extra);
+        });
+        y = sliderRow(cx, y, cw, "\u97f3\u91cf", 0.0, 1.0, mw.volume, false, v -> mw.volume = v);
+        y = sliderRow(cx, y, cw, "\u5706\u89d2\u534a\u5f84", 0, 24, mw.corner, true, v -> mw.corner = v);
+        y = sliderRow(cx, y, cw, "\u5b57\u53f7", 1, 64, mw.fontSize, false, v -> mw.fontSize = v);
+        y = sliderRow(cx, y, cw, "\u7ad6\u6761\u6570", 0, 128, mw.barCount, true,
+                v -> mw.barCount = (int) (double) v);
+        y = sliderRow(cx, y, cw, "\u5bbd\u5ea6", 8, 512, mw.w, true, v -> mw.w = Math.max(4, v));
+        y = sliderRow(cx, y, cw, "\u9ad8\u5ea6", 4, 256, mw.h, true, v -> mw.h = Math.max(3, v));
+        y = sliderRow(cx, y, cw, "\u65cb\u8f6c\u89d2\u5ea6", -180, 180, mw.rot, true, v -> mw.rot = v);
+        y = sliderRow(cx, y, cw, "\u4e0d\u900f\u660e\u5ea6", 0.05, 1.0, mw.alpha, false, v -> mw.alpha = (float) (double) v);
+        y = sliderRow(cx, y, cw, "\u5c42\u7ea7(z)", -20, 40, mw.zOff, true, v -> mw.zOff = v);
+        if (y + 22 <= bottomLimit) {
+            button(mw.showLyric ? "\u6b4c\u8bcd\uff1a\u663e\u793a" : "\u6b4c\u8bcd\uff1a\u5173\u95ed",
+                    cx + 4, y, cw / 2 - 6, 18, b -> {
+                mw.showLyric = !mw.showLyric;
+                rebuildWidgets();
+            });
+            button("\u5b57\u4f53\uff1a\u97f3\u4e50\u2026", cx + cw / 2 + 2, y, cw / 2 - 6, 18,
+                    b -> openChild(new FontSelectorScreen(this, mw.fontId, id -> {
+                        mw.fontId = id;
+                        rebuildWidgets();
+                    })));
+            y += 22;
+        }
+        y = colorPalette(cx, y, cw, mw);
+        return y;
+    }
+
+    private static String shorten(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() <= max ? text : text.substring(0, max) + "\u2026";
+    }
+
     private static String kindName(Widget w) {
         return switch (w.kind()) {
             case Widget.KIND_TEXT -> "\u6587\u672c\u63a7\u4ef6";
@@ -1179,6 +1261,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
             case Widget.KIND_TIMER -> "\u8ba1\u65f6\u5668\u63a7\u4ef6";
             case Widget.KIND_LEADERBOARD -> "\u6392\u884c\u699c\u63a7\u4ef6";
             case Widget.KIND_CHESS -> "\u68cb\u7c7b\u6e38\u620f\u63a7\u4ef6";
+            case Widget.KIND_MUSIC -> "\u97f3\u4e50\u63a7\u4ef6";
             default -> "\u63a7\u4ef6";
         };
     }

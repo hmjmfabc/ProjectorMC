@@ -41,18 +41,24 @@ public final class MediaCache {
         public final int height;
         public final ResourceLocation location;
         public final NativeImage image;
-        /** 原始文件字节（视频要用它来随机访问帧）。 */
-        public final byte[] raw;
+        /**
+         * 【27.1.1】这块纹理的像素字节数（内存统计用）。
+         *
+         * <p>以前这里还存着<b>整个文件的原始字节</b>（{@code byte[] raw}），
+         * 而全项目<b>没有一处读它</b> —— 每张图片因此白占最多 16 MB 堆（且永不释放）。
+         * 纹理上传后像素已在 {@link NativeImage} 里，原始文件字节没有任何用处。</p>
+         */
+        public final int byteSize;
         public final boolean video;
 
         Entry(String hash, int width, int height, ResourceLocation location, NativeImage image,
-              byte[] raw, boolean video) {
+              int byteSize, boolean video) {
             this.hash = hash;
             this.width = width;
             this.height = height;
             this.location = location;
             this.image = image;
-            this.raw = raw;
+            this.byteSize = byteSize;
             this.video = video;
         }
     }
@@ -170,13 +176,57 @@ public final class MediaCache {
      * 24 MB 的视频整段下载重复三次，链路被灌满 ⇒ 保活包/操作包被饿死、
      * 玩家表现为「延迟特别大，圈选平面和破坏方块都点不动」，最后连接被 reset。</p>
      */
+    /** 【27.1.1】统一丢弃一次下载登记：整段流式写盘的要顺手关文件、删 .part。 */
+    private static void dropDownload(String k, boolean deletePart) {
+        Download d = DOWNLOADS.remove(k);
+        if (d != null) d.closeQuietly(deletePart);
+    }
+
     private static final class Download {
         final String hash;
         final int frame;
         /** 声明总字节（第一片到达前为 -1）。 */
         int total = -1;
-        /** 重组缓冲（按声明总字节分配；声明变化时重建）。 */
+        /** 重组缓冲（按声明总字节分配；声明变化时重建）。**只有单帧/图片走这里**。 */
         byte[] data;
+        /**
+         * 【27.1.1】整段文件（frame &lt; 0）的流式写盘句柄 —— 边收边写，堆里不留整份文件。
+         *
+         * <p>以前整段下载会按声明大小 {@code new byte[total]} 把整个文件缓在堆里
+         * （还因此有一条「>64MB 不能下载」的硬上限）：一个 64 MB 的视频就是 64 MB 堆，
+         * 校验哈希时还要再留一份引用。现在只占一个分片的缓冲。</p>
+         */
+        java.io.RandomAccessFile partFile;
+        java.nio.file.Path partPath;
+        /** 流式写盘时已写入的字节高水位（进度显示用）。 */
+        long diskReceived;
+        /** 【27.1.1】累计收到的字节数：用来判定「是否真的收齐」（防止 last 标记提前到达就落盘）。 */
+        long receivedSum;
+        /** 【27.1.1】临时文件建不出来时（缓存目录不可写等）退回内存缓冲（上限 64 MB）。 */
+        boolean memoryFallback;
+
+        /** 这次传输当前占用多少堆字节（诊断/回归用）。 */
+        long bufferedBytes() {
+            return data == null ? 0L : data.length;
+        }
+
+        /** 关闭并（可选）删除 .part 文件。 */
+        void closeQuietly(boolean deletePart) {
+            if (partFile != null) {
+                try {
+                    partFile.close();
+                } catch (Throwable ignored) {
+                }
+                partFile = null;
+            }
+            if (deletePart && partPath != null) {
+                try {
+                    java.nio.file.Files.deleteIfExists(partPath);
+                } catch (Throwable ignored) {
+                }
+            }
+            partPath = null;
+        }
         /** 已收到的字节数高水位（供「加载中…（x/y，xx%）」显示）。 */
         int received;
         /** 被抑制掉的重复请求次数（> 0 说明有调用方在反复要同一份媒体）。 */
@@ -515,12 +565,65 @@ public final class MediaCache {
         return VIDEO_FRAMES.computeIfAbsent(hash, k -> new Frames());
     }
 
+    /**
+     * 【27.1.1】单个视频允许的帧槽位数：受「总内存预算 / 同时活跃的视频数」约束。
+     *
+     * <p>纯函数，便于脚本验证。以前只看 {@code video.frameCacheFrames}，
+     * 于是同时画 N 个视频时槽位总占用是 N 倍的（每个槽位同时占一份像素缓冲与一份显存）；
+     * 现在按预算分摊，且至少留 {@link #MIN_SLOTS_PER_MEDIA} 个槽位保证还能播。</p>
+     *
+     * @param slotBytes  单个槽位占用的字节数
+     * @param mediaCount 当前活跃（有槽位）的视频数量，至少 1
+     * @param budget     总预算字节数
+     * @param configured 配置里允许的槽位上限
+     */
+    static int slotsAllowedForMedia(long slotBytes, int mediaCount, long budget, int configured) {
+        int max = Math.max(MIN_SLOTS_PER_MEDIA, configured);
+        if (slotBytes <= 0 || budget <= 0) return max;
+        long share = Math.max(slotBytes, budget / Math.max(1, mediaCount));
+        int byBudget = (int) Math.max(MIN_SLOTS_PER_MEDIA, share / slotBytes);
+        return Math.max(MIN_SLOTS_PER_MEDIA, Math.min(max, byBudget));
+    }
+
+    /** 每个视频至少保留几个帧槽位（再省内存也要能播）。 */
+    static final int MIN_SLOTS_PER_MEDIA = 4;
+
+    /** 帧槽位总字节预算（配置项 {@code video.maxFrameMemoryMb}，默认 64 MB）。 */
+    static long slotBudgetBytes() {
+        try {
+            return Math.max(8L, ProjectorConfig.INSTANCE.videoMaxFrameMemoryMb.get()) * 1024L * 1024L;
+        } catch (Throwable t) {
+            return 64L * 1024 * 1024;
+        }
+    }
+
+    /** 当前有槽位的视频数量（至少 1，避免除零）。 */
+    private static int activeVideoMedia() {
+        int n = 0;
+        for (Frames f : VIDEO_FRAMES.values()) {
+            if (!f.slots.isEmpty()) n++;
+        }
+        return Math.max(1, n);
+    }
+
     /** 最多保留多少个帧槽位（配置项 {@code video.frameCacheFrames}，默认 12）。 */
     private static int maxFrameSlots() {
+        return maxFrameSlots(0);
+    }
+
+    /**
+     * 最多保留多少个帧槽位（配置项 {@code video.frameCacheFrames}，默认 12）。
+     *
+     * <p>【rc-87】至少 8 个：保护窗 + 手机上几百毫秒的 GPU 队列深度下，
+     * 4 个槽位会让大半帧都被跳过（玩家日志里就是「槽位=4」）。</p>
+     * <p>【27.1.1】再叠加「总内存预算 / 活跃视频数」：同时画多个视频时，
+     * 槽位总占用不再随视频数线性增长（新槽位是按 {@code slotBytes} 报出来的）。</p>
+     */
+    private static int maxFrameSlots(long slotBytes) {
         try {
-            // 【rc-87】至少 8 个：保护窗 + 手机上几百毫秒的 GPU 队列深度下，
-            // 4 个槽位会让大半帧都被跳过（玩家日志里就是「槽位=4」）。
-            return Math.max(8, ProjectorConfig.INSTANCE.videoFrameCacheFrames.get());
+            int configured = Math.max(8, ProjectorConfig.INSTANCE.videoFrameCacheFrames.get());
+            if (slotBytes <= 0) return configured;
+            return slotsAllowedForMedia(slotBytes, activeVideoMedia(), slotBudgetBytes(), configured);
         } catch (Throwable t) {
             return 12;
         }
@@ -710,17 +813,19 @@ public final class MediaCache {
         }
         ImageCodec.Decoded sized = ImageCodec.downscale(decoded,
                 ProjectorConfig.INSTANCE.maxDecodedImageSize.get());
-        Minecraft.getInstance().execute(() -> uploadImage(hash, sized, data));
+        // 【27.1.1】不再把原始文件字节传给纹理表：上传完就让这份 byte[] 变成垃圾。
+        Minecraft.getInstance().execute(() -> uploadImage(hash, sized));
     }
 
-    private static void uploadImage(String hash, ImageCodec.Decoded decoded, byte[] raw) {
+    private static void uploadImage(String hash, ImageCodec.Decoded decoded) {
         if (IMAGES.containsKey(hash)) return;
         NativeImage img = new NativeImage(NativeImage.Format.RGBA, decoded.width(), decoded.height(), false);
         ImageCodec.fillNativeImage(img, decoded);
         ResourceLocation loc = Projector.id("media/" + sanitize(hash));
         TextureManager tm = Minecraft.getInstance().getTextureManager();
         tm.register(loc, new DynamicTexture(img));
-        IMAGES.put(hash, new Entry(hash, decoded.width(), decoded.height(), loc, img, raw, false));
+        IMAGES.put(hash, new Entry(hash, decoded.width(), decoded.height(), loc, img,
+                decoded.width() * decoded.height() * 4, false));
         Projector.LOGGER.debug("[Projector] 图片纹理就绪 {} ({}x{})", hash, decoded.width(), decoded.height());
     }
 
@@ -749,7 +854,8 @@ public final class MediaCache {
                 return;
             }
 
-            int max = maxFrameSlots();
+            long slotBytes = (long) Math.max(1, decoded.width()) * Math.max(1, decoded.height()) * 4L;
+            int max = maxFrameSlots(slotBytes);
             int idx = fs.pick(max);
             if (idx < 0) {
                 // 所有槽位都在保护窗里：这一帧不画（掉帧），别去动显卡正在读的纹理
@@ -759,8 +865,15 @@ public final class MediaCache {
             }
             Frame slot;
             if (idx == fs.slots.size()) {
+                if (SLOT_BYTES.get() + slotBytes > slotBudgetBytes()) {
+                    // 预算已满（同时画太多视频 / 视频太大）：这一帧不画，别把内存撑爆
+                    SLOT_BUDGET_SKIPPED.incrementAndGet();
+                    state(hash).loading.remove(String.valueOf(frame));
+                    return;
+                }
                 slot = newSlot(hash, fs, idx, decoded);      // 建槽位（含一次 new NativeImage + 注册纹理）
                 fs.slots.add(slot);
+                SLOT_BYTES.addAndGet(slotBytes);
                 SLOTS_CREATED.incrementAndGet();
             } else {
                 slot = fs.slots.get(idx);
@@ -942,6 +1055,48 @@ public final class MediaCache {
             new java.util.concurrent.atomic.AtomicLong();
     private static final java.util.concurrent.atomic.AtomicLong SLOTS_CREATED =
             new java.util.concurrent.atomic.AtomicLong();
+    /** 【27.1.1】帧槽位总字节数（跨媒体）与因为预算满而跳过的帧数。 */
+    private static final java.util.concurrent.atomic.AtomicLong SLOT_BYTES =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong SLOT_BUDGET_SKIPPED =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * 【27.1.1】内存占用概览：把「谁在吃内存」写成一行数字（诊断与回归用）。
+     *
+     * <p>本模组此前只有「堆=xxxMB」这一个总数，看不出是哪一块占的；
+     * 现在拆成 图片纹理 / 视频帧槽位（含预算）/ 下载缓冲 / 视频源 四项。</p>
+     */
+    public static String memoryReport() {
+        long imgBytes = 0;
+        int imgCount = 0;
+        for (Entry e : IMAGES.values()) {
+            imgBytes += e.byteSize;
+            imgCount++;
+        }
+        int slotCount = 0;
+        for (Frames f : VIDEO_FRAMES.values()) slotCount += f.slots.size();
+        long buffered = 0;
+        for (Download d : DOWNLOADS.values()) buffered += d.bufferedBytes();
+        return String.format(java.util.Locale.ROOT,
+                "图片=%d张/%.1fMB 视频槽=%d个/%.1fMB(预算%.0fMB,跳过%d) 下载缓冲=%.1fMB 视频源=%d个 BS=%.1fMB",
+                imgCount, imgBytes / 1048576.0, slotCount, SLOT_BYTES.get() / 1048576.0,
+                slotBudgetBytes() / 1048576.0, SLOT_BUDGET_SKIPPED.get(),
+                buffered / 1048576.0, VIDEO_SOURCES.size(), SLOT_BYTES.get() / 1048576.0);
+    }
+
+    /** 【27.1.1】当前所有在途下载占用的**堆**字节（回归用：整段流式写盘时必须恒为 0）。 */
+    static long bufferedDownloadBytesForTest() {
+        long n = 0;
+        for (Download d : DOWNLOADS.values()) n += d.bufferedBytes();
+        return n;
+    }
+
+    /** 【27.1.1】某个 (哈希,帧) 是否还有在途下载登记（回归用）。 */
+    static boolean downloadActiveForTest(String hash, int frame) {
+        return DOWNLOADS.containsKey(key(hash, frame));
+    }
+
     /** 【rc-87】因为「保护窗内没有可用槽位」而跳过的帧数。 */
     private static final java.util.concurrent.atomic.AtomicLong GPU_HELD_SKIPPED =
             new java.util.concurrent.atomic.AtomicLong();
@@ -1038,7 +1193,7 @@ public final class MediaCache {
                 TransferLog.downloadSuppressed(hash, frame, live.suppressed, live.received, live.total);
                 return;
             }
-            DOWNLOADS.remove(k, live);
+            if (DOWNLOADS.remove(k, live)) live.closeQuietly(true);
             Projector.LOGGER.info("[Projector][客户端][下载] 下载超时重来（{} ms 没有新分片）哈希={} 帧={}",
                     live.idleMs(), shortHash(hash), frame < 0 ? "整段" : frame);
         }
@@ -1081,7 +1236,7 @@ public final class MediaCache {
                 MISSING_UNTIL.entrySet().removeIf(e -> e.getValue() < nowMs);
             }
             markFailed(hash);
-            DOWNLOADS.remove(k);
+            dropDownload(k, true);
             if (!logged) {
                 Projector.LOGGER.debug("[Projector] 重复的「服务端没有这份媒体」哈希={} 帧={}",
                         shortHash(hash), frame);
@@ -1100,6 +1255,122 @@ public final class MediaCache {
         });
     }
 
+    /** 【27.1.1】整段文件下载的磁盘保护上限（流式写盘，堆占用与文件大小无关）。 */
+    private static final long DISK_DOWNLOAD_MAX = 512L * 1024 * 1024;
+
+    /**
+     * 【27.1.1】整段文件的流式写盘：边收边写 {@code <hash>.part}，收齐后校验哈希 → 改名 → 解首帧。
+     *
+     * <p>对比旧实现：{@code new byte[total]} 把整份文件缓在堆里，64 MB 的视频就是 64 MB 堆
+     * （还额外被哈希校验引用一次），同时还有一条「>64 MB 不能下载」的硬上限。
+     * 现在峰值堆占用只有一个分片（约 200 KB），上限提到 512 MB 只为保护磁盘。</p>
+     */
+    private static boolean handleWholeToDisk(Download dl, String hash, int offset, int total,
+                                             byte[] data, boolean last) {
+        final String k = key(hash, WHOLE);
+        // 【27.1.1】整段写盘必须在同一个锁里完成：RandomAccessFile 的 seek+write 不是线程安全的，
+        // 而分片处理跑在（可能并发的）媒体工作线程上 —— 否则两个分片会互相错位，
+        // 最终哈希必然对不上、整份文件被丢弃重下。
+        synchronized (dl) {
+            if (dl.memoryFallback) return false;
+            if (dl.partFile == null) {
+                try {
+                    Path dir = LocalMedia.cacheDir();
+                    java.nio.file.Files.createDirectories(dir);
+                    dl.partPath = dir.resolve(hash + ".part");
+                    dl.partFile = new java.io.RandomAccessFile(dl.partPath.toFile(), "rw");
+                    dl.partFile.setLength(0);
+                } catch (Throwable t) {
+                    // 缓存目录不可用（只读/无主目录）：退回内存缓冲，别让下载直接失败
+                    dl.memoryFallback = true;
+                    Projector.LOGGER.warn("[Projector][客户端][下载] 无法创建临时文件，退回内存缓冲"
+                            + "（仅支持 64MB 以内的整段媒体）：{}", t.toString());
+                    return false;
+                }
+            }
+            writeWholeChunk(dl, hash, k, offset, total, data);
+            return true;
+        }
+    }
+
+    private static void writeWholeChunk(Download dl, String hash, String k, int offset, int total,
+                                        byte[] data) {
+        try {
+            dl.partFile.seek(Math.max(0, offset));
+            dl.partFile.write(data);
+            dl.lastChunkMs = System.currentTimeMillis();
+            dl.total = total;
+            dl.diskReceived = Math.max(dl.diskReceived, Math.max(0L, (long) offset + data.length));
+            // 进度显示（transferProgress）读的是 received/total —— 流式写盘也要同步，否则
+            // 「加载中…（x/y，xx%）」在整段下载时会一直是 0%
+            dl.received = (int) Math.min(Integer.MAX_VALUE, dl.diskReceived);
+            dl.receivedSum += data.length;
+
+            final int next = offset + data.length;
+            // 【27.1.1】必须「真的收齐」才落盘：只信 last 标记的话，一个提前到达的尾片
+            // 会让校验读到一份带空洞的文件 —— 哈希必然不一致，整份文件被白白丢弃重下。
+            if (dl.receivedSum < total) {
+                if (next < total) {
+                    // 续传：不解除在途标志、也不登记新的「开始」（同 rc-83）
+                    sendChunkRequest(hash, WHOLE, next, total - next);
+                }
+                return;
+            }
+
+            final Path part = dl.partPath;
+            final long size = dl.partFile.length();
+            dl.closeQuietly(false);          // 保留 .part，下面还要校验与改名
+            DOWNLOADS.remove(k);
+
+            final Path cached = cachePath(hash, WHOLE, true);
+            // 哈希校验：流式读盘算 SHA-1（工作线程），不在堆里留整份文件
+            String actual = LocalMedia.sha1File(part);
+            boolean ok = actual != null && actual.equalsIgnoreCase(hash);
+            TransferLog.hashCheck(hash, actual, ok, size);
+            if (!ok) {
+                java.nio.file.Files.deleteIfExists(part);
+                TransferLog.downloadFail(hash, WHOLE, "哈希校验不一致，已丢弃并允许重新下载");
+                markFailed(hash);
+                WHOLE_FILE_REQUESTED.remove(hash);
+                STREAM_COUNT.remove(hash);
+                return;
+            }
+            java.nio.file.Files.move(part, cached, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            LocalMedia.registerCache(hash, cached);
+            TransferLog.downloadDone(hash, WHOLE, size, cached);
+            // 首帧立刻顶上，播放随后全部走本地文件
+            finishVideoFromPath(hash, cached);
+        } catch (Throwable t) {
+            Projector.LOGGER.warn("[Projector][客户端][下载] 流式写盘失败 {}: {}", hash, t.toString());
+            TransferLog.downloadFail(hash, WHOLE, "流式写盘失败：" + t);
+            dropDownload(k, true);
+            markFailed(hash);
+        }
+    }
+
+    /** 【27.1.1】整段文件已在本地：打开视频源并解出第 0 帧顶上（等价于旧 finish 的 frame&lt;0 分支）。 */
+    private static void finishVideoFromPath(String hash, Path path) {
+        try {
+            VideoSource src = VIDEO_SOURCES.get(hash);
+            if (src == null) {
+                src = VideoSource.open(path);
+                if (src == null) {
+                    markFailed(hash);
+                    return;
+                }
+                VIDEO_SOURCES.put(hash, src);
+            }
+            ImageCodec.Decoded decoded = src.decode(0);
+            if (decoded == null) return;
+            ImageCodec.Decoded sized = ImageCodec.downscale(decoded,
+                    ProjectorConfig.INSTANCE.maxDecodedImageSize.get());
+            stageFrame(hash, 0, sized);
+        } catch (Throwable t) {
+            Projector.LOGGER.warn("[Projector][客户端][下载] 整段视频解码首帧失败 {}: {}", hash, t.toString());
+            markFailed(hash);
+        }
+    }
+
     private static void handleChunk(String hash, int frame, int offset, int total, boolean video,
                                     byte[] data, boolean last) {
         // 【②】分片只累加计数，不逐片打日志（一次 64 MB 会切成几百片）
@@ -1107,32 +1378,49 @@ public final class MediaCache {
         final String k = key(hash, frame);
         if (!top.hmjmfabc.projector.server.Sanitize.isHash(hash)) {
             markFailed(hash);
-            DOWNLOADS.remove(k);
+            dropDownload(k, true);
             return;
         }
-        if (total <= 0 || total > 64 * 1024 * 1024) {
+        // 【27.1.1】整段文件走流式写盘（frame = WHOLE）：堆里不再留整份文件，
+        // 因此不再需要「>64MB 不能下载」这条硬上限（改成一个宽松的磁盘保护上限）。
+        final boolean toDisk = video && frame < 0;
+        final long maxBytes = toDisk ? DISK_DOWNLOAD_MAX : 64L * 1024 * 1024;
+        if (total <= 0 || total > maxBytes) {
             // 【rc-76】以前这里静默 markFailed ⇒ 玩家只看到控件一直「加载中…」而日志里一个字都没有。
-            // 现在写明原因（分块下载目前把整个文件缓在内存里，所以有这条硬上限）。
-            Projector.LOGGER.warn("[Projector][客户端][下载] 拒绝接收：声明大小 {} 字节"
-                            + "（>64MB 的媒体暂时不能分块下载，见 PROJECTOR_GUIDE 已知限制）哈希={}",
-                    total, hash);
-            TransferLog.downloadFail(hash, frame, "声明大小 " + total + " 字节超过 64MB 分块下载上限");
+            Projector.LOGGER.warn("[Projector][客户端][下载] 拒绝接收：声明大小 {} 字节（上限 {} 字节）哈希={}",
+                    total, maxBytes, hash);
+            TransferLog.downloadFail(hash, frame, "声明大小 " + total + " 字节超过上限 " + maxBytes);
             markFailed(hash);
-            DOWNLOADS.remove(k);
+            dropDownload(k, true);
             return;
         }
         if (data == null || data.length == 0) {
-            DOWNLOADS.remove(k);
+            dropDownload(k, true);
             return;
         }
-        // 顺手清扫「卡住的分块下载」：中断的下载会把缓冲永久留在内存里
+        // 顺手清扫「卡住的分块下载」：中断的下载会把缓冲/.part 文件永久留下
         //（一个 24 MB 的视频卡一次就是 24 MB 泄漏）。stale 判定与「能否重发」共用同一个阈值。
-        DOWNLOADS.entrySet().removeIf(en -> en.getValue().idleMs() > 120_000L);
+        for (var en : new java.util.ArrayList<>(DOWNLOADS.entrySet())) {
+            if (en.getValue().idleMs() > 120_000L) dropDownload(en.getKey(), true);
+        }
         // 迟到的回包（在途记录已被超时清掉）也要认，否则这一片白收、偏移链就断了
         Download dl = DOWNLOADS.computeIfAbsent(k, x -> new Download(hash, frame));
+        if (toDisk) {
+            // 整段文件：写盘 → 校验 → 改名 → 解首帧，全程不在堆里留整份文件
+            if (handleWholeToDisk(dl, hash, offset, total, data, last)) return;
+            // 临时文件建不出来（缓存目录只读/不可用）⇒ 退回内存缓冲；这类环境只能收 64MB 以内
+            if (total > 64L * 1024 * 1024) {
+                Projector.LOGGER.warn("[Projector][客户端][下载] 缓存目录不可用且文件 {} 字节超过 64MB，"
+                        + "本次下载放弃 哈希={}", total, hash);
+                TransferLog.downloadFail(hash, frame, "缓存目录不可用且超过 64MB");
+                dropDownload(k, true);
+                markFailed(hash);
+                return;
+            }
+        }
         byte[] buffer = dl.buffer(total);
         if (buffer == null) {
-            DOWNLOADS.remove(k);
+            dropDownload(k, true);
             markFailed(hash);
             return;
         }
@@ -1302,7 +1590,9 @@ public final class MediaCache {
         if (src != null) src.close();
         LOADS.remove(hash);
         // 【rc-83】这份媒体所有在途下载（含整段）一起作废
-        DOWNLOADS.keySet().removeIf(k -> k.startsWith(hash + "#"));
+        for (String k : new java.util.ArrayList<>(DOWNLOADS.keySet())) {
+            if (k.startsWith(hash + "#")) dropDownload(k, true);
+        }
     }
 
     /**
@@ -1327,7 +1617,9 @@ public final class MediaCache {
         VIDEO_FRAMES.clear();
         for (VideoSource s : VIDEO_SOURCES.values()) s.close();
         VIDEO_SOURCES.clear();
+        SLOT_BYTES.set(0);          // 【27.1.1】槽位表已清空，字节账目一起归零
         LOADS.clear();
+        for (Download d : DOWNLOADS.values()) d.closeQuietly(true);
         DOWNLOADS.clear();
     }
 

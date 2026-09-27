@@ -146,8 +146,15 @@ public final class T21 {
                 "frame=" + SENT.get(0).frame());
         MediaCache.onMediaChunk(VHASH, MediaCache.WHOLE, 0, 4 * 1024 * 1024, true,
                 new byte[CHUNK], false, false);
-        Thread.sleep(200L);
-        long[] prog = MediaCache.transferProgress(VHASH, 1234);
+        // 轮询而不是固定等待：分片处理走媒体池，固定 200ms 会偶发假失败（同 T23 的教训）
+        long[] prog = null;
+        long dl3 = System.currentTimeMillis() + 3000L;
+        while (System.currentTimeMillis() < dl3) {
+            prog = MediaCache.transferProgress(VHASH, 1234);
+            if (prog != null && prog[0] > 0) break;
+            Thread.sleep(25L);
+        }
+        if (prog == null) prog = new long[]{0, 1};
         check("播放帧变化时进度会回退到「整段下载」那条记录",
                 prog != null && prog[1] == 4L * 1024 * 1024,
                 prog == null ? "拿不到进度" : ("total=" + prog[1]));

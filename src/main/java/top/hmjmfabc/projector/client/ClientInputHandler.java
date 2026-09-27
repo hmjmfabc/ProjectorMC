@@ -174,8 +174,29 @@ public final class ClientInputHandler {
         Plane owner;
         if (selected == null) {
             WidgetPick pick = pickWidget(mc, null);
-            if (pick == null
-                    || !(pick.widget() instanceof top.hmjmfabc.projector.common.widget.ChessWidget)) {
+            if (pick == null) {
+                return;
+            }
+            // 【27.1.1 音乐控件】又一条例外：没有选中平面时，**点在播放键上**就启停音乐。
+            // 用户要求「世界内点击播放键可以启停音乐（无需选中平面）」——
+            // 但只认播放键那一小块，点控件别处仍然什么都不做（保持 ⑥.2 的克制）。
+            if (pick.widget() instanceof top.hmjmfabc.projector.common.widget.MusicWidget music) {
+                double[] hit = musicHit(mc, pick.plane(), music);
+                if (hit == null) {
+                    return;
+                }
+                event.setCanceled(true);
+                event.setSwingHand(false);
+                if (hit[0] >= 0) {
+                    // 点在波形条上 = 调进度（点了就跳，不用拖）
+                    top.hmjmfabc.projector.client.music.MusicManager.seekInWorld(
+                            pick.plane(), music, hit[0]);
+                } else {
+                    top.hmjmfabc.projector.client.music.MusicManager.toggleInWorld(pick.plane(), music);
+                }
+                return;
+            }
+            if (!(pick.widget() instanceof top.hmjmfabc.projector.common.widget.ChessWidget)) {
                 return;
             }
             w = pick.widget();
@@ -188,6 +209,22 @@ public final class ClientInputHandler {
         // 阻止方块放置 / 物品使用，改为打开对应的界面
         event.setCanceled(true);
         event.setSwingHand(false);
+        // 【27.1.1 音乐控件】选中平面时，点在播放键上同样是「启停音乐」而不是开编辑器
+        //（否则想暂停音乐得先右键打开编辑器，太绕）。
+        if (w instanceof top.hmjmfabc.projector.common.widget.MusicWidget music) {
+            double[] hit = musicHit(mc, owner, music);
+            if (hit != null) {
+                event.setCanceled(true);
+                event.setSwingHand(false);
+                if (hit[0] >= 0) {
+                    top.hmjmfabc.projector.client.music.MusicManager.seekInWorld(owner, music, hit[0]);
+                } else {
+                    top.hmjmfabc.projector.client.music.MusicManager.toggleInWorld(owner, music);
+                }
+                return;
+            }
+            // 既不在播放键、也不在波形条上 ⇒ 继续走「打开编辑器」
+        }
         // 【⑪】棋盘控件：右键**直接开始对局**，而不是先弹一堆设置。
         // 用户反馈「棋类游戏不能在游戏内进行对局」——以前必须先右键 →
         // 打开控件编辑器 → 再找「打开对局界面…」三步，太深了。
@@ -345,6 +382,36 @@ public final class ClientInputHandler {
         for (Plane p : candidates) {
             Widget w = pickWidgetOn(p);
             if (w != null) return new WidgetPick(p, w);
+        }
+        return null;
+    }
+
+    /**
+     * 这次右键是不是落在某个音乐控件的**播放键**上。
+     *
+     * <p>用控件自己的 {@code hitButton}（几何唯一来源），所以判定范围与画出来的播放键
+     * 永远一致；触屏指尖比较粗，那里额外放宽了半格。</p>
+     */
+    private static double[] musicHit(Minecraft mc, Plane plane,
+                                     top.hmjmfabc.projector.common.widget.MusicWidget music) {
+        if (plane == null || mc.player == null) {
+            return null;
+        }
+        Vec3 eye = mc.player.getEyePosition(1.0f);
+        Vec3 dir = mc.player.getViewVector(1.0f);
+        Double t = intersectPlane(plane, eye, dir, ProjectorConfig.INSTANCE.selectDistance.get());
+        if (t == null) {
+            return null;
+        }
+        Vec3 p = eye.add(dir.scale(t));
+        double cx = plane.canvasX(p);
+        double cy = plane.canvasY(p);
+        if (music.hitButton(cx, cy)) {
+            return new double[]{-1.0};            // 播放键 → 启停
+        }
+        double fraction = music.seekFractionAt(cx, cy);
+        if (fraction >= 0) {
+            return new double[]{fraction};        // 波形条 → 调进度
         }
         return null;
     }

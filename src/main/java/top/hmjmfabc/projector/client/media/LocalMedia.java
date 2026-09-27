@@ -95,6 +95,11 @@ public final class LocalMedia {
         return rootDir().resolve("media");
     }
 
+    /** 用户放置本地音乐的目录（音乐控件用）。 */
+    public static Path musicDir() {
+        return rootDir().resolve("musics");
+    }
+
     /** 用户放置自定义字体的目录。 */
     public static Path fontDir() {
         return rootDir().resolve("fonts");
@@ -116,6 +121,7 @@ public final class LocalMedia {
     public static void ensureDirectories() {
         try {
             Files.createDirectories(mediaDir());
+            Files.createDirectories(musicDir());
             Files.createDirectories(fontDir());
             Files.createDirectories(cacheDir());
         } catch (IOException ex) {
@@ -493,6 +499,27 @@ public final class LocalMedia {
     public static String scanReport() {
         return "上次=" + LAST_SCAN_MS + "ms 最慢=" + MAX_SCAN_MS + "ms(" + MAX_SCAN_THREAD + ")"
                 + " 后台=" + (SCAN_PENDING.get() ? "是" : "否");
+    }
+
+    /**
+     * 【27.1.1】流式算某个文件的 SHA-1（**不进摘要缓存**）。
+     *
+     * <p>用途：整段视频是边下边写到 {@code <hash>.part} 的，校验时逐块读盘算哈希，
+     * 堆里不留整份文件；临时文件也不该掺进「素材目录摘要缓存」。</p>
+     */
+    @Nullable
+    public static String sha1File(Path p) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] buf = new byte[65536];
+            try (var in = Files.newInputStream(p)) {
+                int n;
+                while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            }
+            return hex(md.digest());
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 计算文件 SHA-1；失败返回 null。结果按 (路径,大小,修改时间) 缓存。 */

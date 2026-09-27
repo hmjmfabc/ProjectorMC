@@ -26,7 +26,11 @@ sourceSets.main.resources {
 }
 
 repositories {
-    // Add here additional repositories if required by some of the dependencies below.
+    // 追加的仓库（音乐控件需要 MP3 解码器 mp3spi，它只在 Maven Central 上）
+    mavenCentral()
+    // 第三方解码库（BSD / LGPL，见 NOTICE）：与两个字体 ttf 一样不入库，
+    // 需要自行放进 libs/ 才能构建 —— 说明见 README.md「从源码构建」
+    flatDir { dirs 'libs' }
 }
 
 base {
@@ -36,7 +40,7 @@ base {
 // Mojang ships Java 21 to end users in 1.21.1, so mods should target Java 21.
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
-//minecraft.accessTransformers.file rootProject.file('src/main/resources/META-INF/accesstransformer.cfg')
+minecraft.accessTransformers.file rootProject.file('src/main/resources/META-INF/accesstransformer.cfg')
 //minecraft.accessTransformers.entry public net.minecraft.client.Minecraft textureManager # textureManager
 
 // Default run configurations.
@@ -117,6 +121,32 @@ dependencies {
             prefer "0.2.5"
         }
     }
+
+        // ---- 音乐控件：音频解码（MP3 / FLAC / AAC）----
+    // ⚠ 这三个库都是**第三方库**，许可证与代码不同（见 NOTICE）：
+    //   mp3spi + jlayer + tritonus-share = LGPL-2.1；jflac-codec = BSD 三条款。
+    //   ⚠ 曾经还嵌过 javasound-aac（AAC/M4A 解码）——**必须不要再加回来**：
+    //     它和 JCodec 自带的那份 net.sourceforge.jaad.* 是**同名包**，
+    //     两个 jar 一起嵌进模组会让 ModLauncher 的模块解析在启动阶段直接崩：
+    //     java.lang.module.ResolutionException: Modules javasound.aac and jcodec
+    //     export package net.sourceforge.jaad.aac.syntax to module mp3spi
+    //     （JPMS 不允许两个自动模块导出同一个包，与代码无关，属于打包层面的硬约束）
+    //   它们以**未经修改的独立 jar** 嵌在 META-INF/jarjar/ 里（可单独替换），
+    //   属于 LGPL 允许的「使用库的作品」，不是把库代码并入本模组源码。
+    implementation 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
+    jarJar(implementation('com.googlecode.soundlibs:mp3spi:1.9.5.4')) {
+        version { strictly '[1.9.5,1.10)'; prefer '1.9.5.4' }
+    }
+    implementation 'com.googlecode.soundlibs:jlayer:1.0.1.4'
+    jarJar(implementation('com.googlecode.soundlibs:jlayer:1.0.1.4')) {
+        version { strictly '[1.0.1,1.1)'; prefer '1.0.1.4' }
+    }
+    implementation 'com.googlecode.soundlibs:tritonus-share:0.3.7.4'
+    jarJar(implementation('com.googlecode.soundlibs:tritonus-share:0.3.7.4')) {
+        version { strictly '[0.3.7,0.4)'; prefer '0.3.7.4' }
+    }
+    implementation 'libs:jflac-codec:1.5.3-SNAPSHOT'
+    jarJar(implementation('libs:jflac-codec:1.5.3-SNAPSHOT'))
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime

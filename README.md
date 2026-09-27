@@ -24,9 +24,10 @@
 | 分类 | 内容 |
 |---|---|
 | 平面 | 任意方块表面（含楼梯等不完整平面）、U 键圈选、平面对话框（命名 / 内容保护 / 转让 / 删除） |
-| 控件 | 文本、图片、视频、时钟、天气、百分比进度、计时器、排行榜、棋类游戏 |
+| 控件 | 文本、图片、视频、**音乐**、时钟、天气、百分比进度、计时器、排行榜、棋类游戏 |
 | 文字 | 自定义 TTF 字体、无极字号、任意旋转、多行排版、`&4`/`&l` 等格式化代码、`&z` 彩色渐变、`&s..e..` 双色渐变、调色盘 |
 | 视频 | MJPEG（`.mjpg`）与 ZIP 帧序列（`.zip`）；内置**纯 Java 转换器**（JCodec），可把 H.264 等转成可播放格式 |
+| 音乐 | 圆角矩形播放条（播放键 + 语音条式波形 + 歌名/歌词 + 时间）；本地音频（MP3 / FLAC / WAV）与**网易云音乐**（关键字搜索或粘 ID / 分享链接）；世界里点播放键即可启停，所有人按距离远近听到，带歌词显示 |
 | 流程（时间轴） | 为控件编排出现 / 隐藏 / 移动 / 缩放 / 变色动画，带时间轴编辑器与预览界面 |
 | 棋类 | 井字棋、五子棋、象棋、围棋、国际象棋；人机 / 双人 / 斗蛐蛐（AI 自走）；三档 AI |
 | 联机 | 服务端权威数据、SHA-1 哈希校验与本地缓存复用、上传下载限速、日出站流量上限、两侧对称的传输日志 |
@@ -38,7 +39,8 @@
 
 1. 安装 **NeoForge 21.1.x**（Minecraft **1.21.1**）。
 2. 把 `projector-<版本>-all.jar` 放进 `mods/` 文件夹。
-   - **必须用 `-all.jar`**：它里面有 Jar-in-Jar 打包的 JCodec，缺少它视频转换不可用。
+   - **必须用 `-all.jar`**：它里面有 Jar-in-Jar 打包的 JCodec（视频转换）与音频解码库
+     （音乐控件），缺少它们视频转换与音乐播放不可用。
 3. 联机时**客户端与服务端都要安装同一版本**（数据模型是服务端权威）。
 
 ## 从源码构建
@@ -46,8 +48,19 @@
 ```bash
 git clone https://github.com/hmjmfabc/ProjectorMC.git
 cd ProjectorMC
-./gradlew build          # 需要 JDK 21；首次会联网拉取 NeoForge 依赖
+mkdir -p libs            # 音乐控件要的两个解码库（见下）
+# 把 jflac-codec-1.5.3-SNAPSHOT.jar 放进 libs/
+./gradlew build          # 需要 JDK 21；首次会联网拉取 NeoForge 依赖与 mp3spi
 ```
+
+音乐控件用到两个第三方解码库：`mp3spi`（含 jlayer / tritonus-share，Gradle 会从
+Maven Central 自动下载）与 `jflac-codec`（**不进仓库**，需自行放进 `libs/`，来源见 [NOTICE](NOTICE)）。
+缺少它们时**仍然能编译运行**，只是音乐控件无法解码音频。
+
+> ⚠ **不要再把 `javasound-aac`（AAC/M4A 解码）加回来**：它和内置 JCodec 自带的那份
+> `net.sourceforge.jaad.*` 是**同名包**，两个 jar-in-jar 库导出同一个 JPMS 包会让
+> ModLauncher 在**启动阶段**直接崩（`java.lang.module.ResolutionException`）。
+> 因此音频格式只有 **MP3 / FLAC / WAV**。
 
 产物：
 
@@ -111,6 +124,11 @@ bash tmp/run-all.sh                  # 跑全部套件
 
 - **代码**：Apache-2.0
 - **内置的 JCodec**：FreeBSD（BSD 2-Clause）
+- **内置的音频解码库**（只有音乐控件使用）：mp3spi / jlayer / tritonus-share 与
+  javasound-aac 为 **GNU LGPL 2.1**（**已移除，见上**），jflac-codec 为 BSD 风格许可；
+  它们以**未经修改的独立 jar** 形式嵌在 `META-INF/jarjar/` 里，可以单独替换。
+- **音乐控件的播放实现参考/移植自 [网络音乐机 Net Music Mod](https://github.com/TartaricAcid/NetMusic)**
+  （MIT 许可）。**只有音乐模块引用了该项目**，其余功能均为本项目独立实现。
 - **`assets/projector/font/` 下的字体**：版权归各自作者，**不在**本项目的 Apache-2.0 授权范围内；
   再分发前请自行确认其授权条款。
 - Minecraft、NeoForge 及其标识归各自所有者；本项目与 Mojang / Microsoft 无关联。
