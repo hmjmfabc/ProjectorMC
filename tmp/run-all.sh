@@ -24,8 +24,15 @@ NIGHTCONF=$(find $HOME/.gradle/caches/modules-2/files-2.1/com.electronwill.night
   -name "*.jar" 2>/dev/null | grep -vE "sources|javadoc" | tr '\n' ':')
 CP="$MCJAR:${EXTRA}${NIGHTCONF}build/classes/java/main"
 pkg() { # $1=dir $2=fqcn
+  rm -rf "tmp/$1/out"          # 必须先删：否则编译失败时会跑到上一轮的旧 class，假通过
   mkdir -p "tmp/$1/out"
-  javac -encoding UTF-8 -proc:none -cp "$CP" -d "tmp/$1/out" "tmp/$1/${2##*.}.java" 2>&1 | grep -E "error" | head -3
+  jout=$(javac -encoding UTF-8 -proc:none -cp "$CP" -d "tmp/$1/out" "tmp/$1/${2##*.}.java" 2>&1)
+  if echo "$jout" | grep -qE "error"; then
+    echo "$2: COMPILE FAILED"
+    echo "$jout" | grep -E "error" | head -5
+    fail=$((fail+1))
+    return
+  fi
   out=$(java -Dfile.encoding=UTF-8 -cp "$CP:tmp/$1/out" "$2" 2>&1)
   line=$(echo "$out" | grep -E "^== " | tail -1)
   [ -z "$line" ] && line="NO RESULT"
@@ -40,5 +47,6 @@ pkg v25 top.hmjmfabc.projector.client.media.T25
 pkg v26 top.hmjmfabc.projector.client.media.T26
 pkg v27 top.hmjmfabc.projector.client.media.T27
 pkg v28 top.hmjmfabc.projector.client.music.T28
+pkg v29 top.hmjmfabc.projector.client.media.wm.T29
 
 echo "--- 失败套件数: $fail ---"

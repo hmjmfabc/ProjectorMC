@@ -93,6 +93,14 @@ public final class MediaUploader {
                 long auto = top.hmjmfabc.projector.client.ClientServerInfo.autoCompressVideoBytes();
                 boolean useOriginal = originalQuality
                         && top.hmjmfabc.projector.client.ClientServerInfo.allowOriginalUpload();
+                // 【27.1.2】装了 WaterMedia 且是它能直接放的格式：**不要**抽帧压缩
+                //（压出来的是 MJPEG，反而丢掉画质；原样上传后由 WaterMedia 解码）
+                if (!useOriginal && size > auto
+                        && top.hmjmfabc.projector.client.media.wm.WaterMediaBridge.available()
+                        && top.hmjmfabc.projector.client.media.wm.WaterMediaBridge
+                                .isNativeVideo(path.getFileName().toString())) {
+                    useOriginal = true;
+                }
                 if (!useOriginal && auto > 0 && size > auto) {
                     Path out = VideoShrinker.compressedPath(path);
                     if (out == null) {
@@ -120,6 +128,54 @@ public final class MediaUploader {
         }
     }
 
+    /**
+     * 这个文件是不是「我们自己不解码、直接原样交给外部解码器放」的视频。
+     *
+     * <p>【27.1.2】对玩家只表现为「它就是个能放的视频」——界面里不提后端、不提格式限制。
+     * 内部判据两条：装了能解码它的模组，且扩展名属于那类容器。</p>
+     */
+    public static boolean externalVideo(java.nio.file.Path path) {
+        if (path == null || path.getFileName() == null) {
+            return false;
+        }
+        String name = path.getFileName().toString();
+        return top.hmjmfabc.projector.client.media.wm.WaterMediaBridge.available()
+                && top.hmjmfabc.projector.client.media.wm.WaterMediaBridge.isNativeVideo(name);
+    }
+
+    /**
+     * 视频元数据探测的**唯一入口**（界面与上传都走这里）。
+     *
+     * <p>内置解得了（MJPEG / ZIP 帧序列）就按老办法拿尺寸+帧表；
+     * 内置解不了但在外部解码器的射程内，就只读容器头拿宽高、不建帧表
+     * （帧由外部解码器自己管）。两条都失败才返回 {@code null}。</p>
+     */
+    public record VideoMeta(int width, int height, int frames, long[] frameTable) {
+        public boolean hasFrameTable() {
+            return frames > 0 && frameTable.length > 0;
+        }
+
+        /** 帧率只对内置帧序列有意义；其它一律按 10 报（界面只拿它做进度换算）。 */
+        public double fpsOrDefault() {
+            return 10.0;
+        }
+    }
+
+    @Nullable
+    public static VideoMeta probeVideo(java.nio.file.Path path) {
+        if (externalVideo(path)) {
+            int[] sz = VideoProbe.size(path);
+            return new VideoMeta(sz == null ? 0 : sz[0], sz == null ? 0 : sz[1], 0, new long[0]);
+        }
+        VideoSource src = VideoSource.open(path);
+        if (src == null) {
+            return null;
+        }
+        VideoMeta meta = new VideoMeta(src.width, src.height, src.frameCount, src.exportFrameTable());
+        src.close();
+        return meta;
+    }
+
     private static void uploadBlocking(Path path, boolean video, boolean originalQuality,
                                        @Nullable Callback callback) {
         Prepared prep = prepare(path, video, originalQuality);
@@ -142,17 +198,18 @@ public final class MediaUploader {
         double fps = 10;
         long[] frameTable = new long[0];
         if (video) {
-            VideoSource src = VideoSource.open(sendPath);
-            if (src == null) {
-                report(callback, false,
-                        "\u65e0\u6cd5\u8bc6\u522b\u7684\u89c6\u9891\u683c\u5f0f\uff08\u8bf7\u4f7f\u7528 MJPEG \u6216 ZIP \u5e27\u5e8f\u5217\uff09");
+            VideoMeta meta = probeVideo(sendPath);
+            if (meta == null) {
+                report(callback, false, "\u8fd9\u4e2a\u89c6\u9891\u6253\u4e0d\u5f00\uff08"
+                        + "\u6587\u4ef6\u53ef\u80fd\u5df2\u635f\u574f\uff0c\u6216\u683c\u5f0f\u4e0d\u652f\u6301\uff09");
                 return;
             }
-            width = src.width;
-            height = src.height;
-            frames = src.frameCount;
-            frameTable = src.exportFrameTable();
-            src.close();
+            width = meta.width();
+            height = meta.height();
+            if (meta.hasFrameTable()) {
+                frames = meta.frames();
+                frameTable = meta.frameTable();
+            }
         } else {
             int[] sz = ImageCodec.size(data, 0, data.length);
             if (sz == null) {

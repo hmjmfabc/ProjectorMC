@@ -207,6 +207,20 @@ public final class WidgetRenderer {
             placeholder(collector, ctx, w, 0x663377CC);
             return;
         }
+        // 【27.1.2】装了 WaterMedia 且这个控件该用它时，画面由它解码（MP4 等就靠这条）
+        if (top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.wants(w)) {
+            net.minecraft.resources.ResourceLocation wm =
+                    top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.textureFor(w);
+            if (wm != null && QuadCollector.textureReady(wm)) {
+                drawVideoQuad(collector, ctx, w, wm);
+                reportWaterMedia(w);
+                return;
+            }
+            // WaterMedia 那边还没就绪（连源 / 建解码器）：用另一种颜色的占位，别和「内置加载中」混淆
+            loadingPlaceholder(collector, ctx, w, w.mediaId, 0, 0x6644CC99);
+            // 注：占位色偏绿，和内置后端的橙色占位区分开（一眼看出在用哪个后端）
+            return;
+        }
         long now = clientTimeMs();
         int frame = w.currentFrame(now);
         reportVideo(w, frame);
@@ -216,7 +230,13 @@ public final class WidgetRenderer {
             loadingPlaceholder(collector, ctx, w, w.mediaId, frame, 0x66CCAA33);
             return;
         }
-        collector.setRenderType(QuadCollector.imageType(f.location));
+        drawVideoQuad(collector, ctx, w, f.location);
+    }
+
+    /** 把一帧画到控件方框里（内置后端与 WaterMedia 后端共用同一份几何）。 */
+    private static void drawVideoQuad(QuadCollector collector, PlaneRenderContext ctx,
+                                      VideoWidget w, net.minecraft.resources.ResourceLocation texture) {
+        collector.setRenderType(QuadCollector.imageType(texture));
         int tint = QuadCollector.withAlpha(w.tint, w.alpha);
         double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, 0, 0);
         double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, w.w, 0);
@@ -225,6 +245,21 @@ public final class WidgetRenderer {
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
                 ctx.depth(), 0f, 0f, 1f, 1f, tint);
+    }
+
+    /** 【27.1.2】每隔一段时间报一次「这个视频正在由 WaterMedia 播」。 */
+    private static final java.util.Map<java.util.UUID, Long> WM_REPORT_MS = new java.util.HashMap<>();
+
+    private static void reportWaterMedia(VideoWidget w) {
+        long now = System.currentTimeMillis();
+        Long last = WM_REPORT_MS.get(w.id);
+        if (last != null && now - last < 30_000L) {
+            return;
+        }
+        WM_REPORT_MS.put(w.id, now);
+        top.hmjmfabc.projector.Projector.LOGGER.info("[Projector][视频] WaterMedia 播放中: 素材={}（{}）｜{}",
+                w.mediaName, w.mediaId.substring(0, Math.min(8, w.mediaId.length())),
+                top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.report());
     }
 
     /** 【rc-86】把「这个视频控件一帧有多大、放多大、多少帧率」写进日志（只在该变了才写）。 */

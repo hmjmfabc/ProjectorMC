@@ -33,7 +33,7 @@ import java.util.zip.ZipOutputStream;
  *       只会白白吃 CPU，而模组的读取端本来就支持 STORED。</li>
  * </ul>
  *
- * <p><b>内存策略：</b>整个转换过程是流式的——ffmpeg 把 MJPEG 写到标准输出，
+ * <p><b>内存策略：</b>整个转换过程是流式的——内置解码器把 MJPEG 按帧写进目标文件，
  * 我们边读边按帧切开直接写进目标文件，任何时刻内存里只有一帧（几百 KB）。
  * 因此转一个几百 MB 的长视频也不会把内存顶上去。</p>
  *
@@ -112,12 +112,12 @@ public final class VideoConverter {
      * @param target 目标文件（会被覆盖）
      */
     public static Result convert(Path source, Path target, Options opts, Progress progress) {
-        // 后端选择：优先用内置的纯 Java 解码器（任何平台都能用，Android 上唯一可行），
-        // ffmpeg 只作为可选加速（有的话帧序列化更快，且支持 H.265/AV1 等更多编码）。
-        Path ffmpeg = Ffmpeg.locateBlocking();
+        // 【27.1.2】只保留内置的纯 Java 解码器（JCodec）：
+        // ffmpeg 那条路已经砍掉 —— Android 上本来就调不到它（启动器沙箱 + noexec），
+        // 而装了 WaterMedia 的玩家可以直接放常见格式，不需要先转码。
         boolean javaOk = JcodecBackend.available();
-        if (ffmpeg == null && !javaOk) {
-            return new Result(false, "没有可用的视频解码器（内置解码器不可用，也没有 ffmpeg）", null);
+        if (!javaOk) {
+            return new Result(false, "内置视频解码器不可用（JCodec 未加载）", null);
         }
         if (!Files.isRegularFile(source)) {
             return new Result(false, "源文件不存在", null);
@@ -130,20 +130,7 @@ public final class VideoConverter {
         // 先写到临时文件，成功后再改名：避免转换失败留下半个文件被当成可用素材。
         Path temp = target.resolveSibling(target.getFileName() + ".part");
         try {
-            Result r;
-            if (ffmpeg != null) {
-                r = opts.target == Target.ZIP
-                        ? convertToZip(ffmpeg, source, temp, opts, progress)
-                        : convertToMjpeg(ffmpeg, source, temp, opts, progress);
-                if (!r.ok() && javaOk) {
-                    // ffmpeg 失败（编码不支持等）时回退到内置解码器再试一次
-                    progress.update(-1, "ffmpeg 失败，改用内置解码器重试…");
-                    Files.deleteIfExists(temp);
-                    r = convertWithJcodec(source, temp, opts, progress);
-                }
-            } else {
-                r = convertWithJcodec(source, temp, opts, progress);
-            }
+            Result r = convertWithJcodec(source, temp, opts, progress);
             if (!r.ok()) {
                 Files.deleteIfExists(temp);
                 return r;
@@ -183,256 +170,26 @@ public final class VideoConverter {
     // MJPEG 单文件
     // ------------------------------------------------------------------
 
-    private static Result convertToMjpeg(Path ffmpeg, Path source, Path out, Options o, Progress cb)
-            throws Exception {
-        List<String> cmd = baseCommand(ffmpeg, source, o);
-        // 限制输出体积：超过存档单个媒体上限后再转下去也没意义（上传会被拒），
-        // 而且 -fs 截断处如果落在帧中间，读取端会自动丢掉那个残缺帧。
-        cmd.add("-fs");
-        cmd.add(String.valueOf(ProjectorConfig.INSTANCE.maxVideoBytes.get()));
-        cmd.add("-f");
-        cmd.add("avi");
-        cmd.add(out.toAbsolutePath().toString());
-        return run(cmd, null, cb, "正在转换为 MJPEG…");
-    }
-
     // ------------------------------------------------------------------
     // ZIP 帧序列
     // ------------------------------------------------------------------
 
-    private static Result convertToZip(Path ffmpeg, Path source, Path out, Options o, Progress cb)
-            throws Exception {
-        List<String> cmd = baseCommand(ffmpeg, source, o);
-        // 把 MJPEG 流送到标准输出，我们边读边切帧写进 zip（全程不落临时帧文件）
-        cmd.add("-f");
-        cmd.add("mjpeg");
-        cmd.add("pipe:1");
-        return run(cmd, pipe -> writeZip(pipe, out, cb), cb, "正在转换为 ZIP 帧序列…");
-    }
-
     /** 从 MJPEG 字节流里切出每一帧 JPEG，写进 zip（STORED，不再压缩）。 */
-    private static void writeZip(InputStream in, Path out, Progress cb) throws Exception {
-        // 最小帧长：低于这个字节数的一定是标记噪声而不是真 JPEG，直接丢掉
-        final int minFrameBytes = 128;
-        final long maxBytes = ProjectorConfig.INSTANCE.maxVideoBytes.get();
-        try (ZipOutputStream zip = new ZipOutputStream(
-                new BufferedOutputStream(Files.newOutputStream(out)))) {
-            byte[] buf = new byte[65536];
-            ByteArrayOutputStream frame = new ByteArrayOutputStream(1 << 17);
-            int frameIndex = 0;
-            long written = 0;
-            boolean inFrame = false;
-            boolean full = false;
-            int prev = -1;
-            int n;
-            while (!full && (n = in.read(buf)) > 0) {
-                if (cb.cancelled()) return;
-                for (int i = 0; i < n; i++) {
-                    int b = buf[i] & 0xFF;
-                    if (!inFrame) {
-                        // 找 SOI：FF D8
-                        if (prev == 0xFF && b == 0xD8) {
-                            inFrame = true;
-                            frame.reset();
-                            frame.write(0xFF);
-                            frame.write(0xD8);
-                        }
-                    } else {
-                        frame.write(b);
-                        // 找 EOI：FF D9
-                        // 说明：合法 JPEG 的熵编码数据里 FF 后面必须跟 00（或 RSTn），
-                        // 所以 FF D9 只可能出现在真正的 EOI 处。模组的读取端
-                        // （VideoSource.scanMjpeg）用的就是同一条规则，
-                        // 因此「转出来的文件一定能被自己读回来」。
-                        if (prev == 0xFF && b == 0xD9) {
-                            byte[] data = frame.toByteArray();
-                            if (data.length >= minFrameBytes) {
-                                if (written + data.length > maxBytes) {
-                                    full = true;
-                                } else {
-                                    writeStored(zip, String.format(Locale.ROOT, "frame_%05d.jpg", frameIndex++), data);
-                                    written += data.length;
-                                }
-                            }
-                            frame.reset();
-                            inFrame = false;
-                            if (full) break;
-                        }
-                    }
-                    prev = b;
-                }
-            }
-            // 流意外结束时若还有半帧，直接丢弃（不完整的 JPEG 解不出来）
-            if (frameIndex == 0) {
-                throw new java.io.IOException("没有提取到任何帧");
-            }
-        }
-    }
-
     /** 以 STORED 方式写入一个 zip 条目（JPEG 已压缩，无需再 deflate）。 */
-    private static void writeStored(ZipOutputStream zip, String name, byte[] data) throws Exception {
-        ZipEntry e = new ZipEntry(name);
-        e.setMethod(ZipEntry.STORED);
-        e.setSize(data.length);
-        e.setCompressedSize(data.length);
-        CRC32 crc = new CRC32();
-        crc.update(data);
-        e.setCrc(crc.getValue());
-        zip.putNextEntry(e);
-        zip.write(data);
-        zip.closeEntry();
-    }
-
     // ------------------------------------------------------------------
     // 命令构造与执行
     // ------------------------------------------------------------------
 
     /**
-     * 公共的 ffmpeg 参数。
+     * 公共的输出参数。
      *
      * <p>视频滤镜刻意写成两段 scale：第一段把画面等比缩进 {@code maxSide x maxSide} 的框里，
      * 第二段把宽高各截成偶数——{@code yuvj420p} 要求偶数尺寸，否则某些分辨率会直接失败。</p>
      */
-    private static List<String> baseCommand(Path ffmpeg, Path source, Options o) {
-        List<String> cmd = new ArrayList<>();
-        cmd.add(ffmpeg.toString());
-        cmd.add("-hide_banner");
-        cmd.add("-nostdin");
-        cmd.add("-y");
-        cmd.add("-i");
-        cmd.add(source.toAbsolutePath().toString());
-        if (o.maxSeconds > 0) {
-            cmd.add("-t");
-            cmd.add(String.valueOf(o.maxSeconds));
-        }
-        cmd.add("-an");   // 不要音轨：模组不播放声音
-        cmd.add("-sn");
-        cmd.add("-vf");
-        String max = String.valueOf(Math.max(64, o.maxSide));
-        cmd.add("fps=" + Math.max(1, o.fps)
-                + ",scale=" + max + ":" + max + ":force_original_aspect_ratio=decrease"
-                + ",scale=trunc(iw/2)*2:trunc(ih/2)*2");
-        cmd.add("-c:v");
-        cmd.add("mjpeg");
-        cmd.add("-q:v");
-        cmd.add(String.valueOf(Math.max(1, Math.min(31, o.quality))));
-        cmd.add("-pix_fmt");
-        cmd.add("yuvj420p");
-        // 进度走 stderr 的 key=value 行，便于一边读一边算百分比
-        cmd.add("-progress");
-        cmd.add("pipe:2");
-        cmd.add("-nostats");
-        return cmd;
-    }
-
     /** 读取标准输出的回调（为 null 时表示输出写到文件，不读 stdout）。 */
     private interface PipeReader {
         void read(InputStream in) throws Exception;
     }
 
-    private static Result run(List<String> cmd, @Nullable PipeReader reader, Progress cb, String whatTaken)
-            throws Exception {
-        Projector.LOGGER.info("[Projector] 执行转换: {}", String.join(" ", cmd));
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(false);
-        if (reader == null) {
-            // 输出写文件时不读 stdout：直接丢弃，避免管道缓冲积压把 ffmpeg 卡住
-            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-        }
-        Process p = pb.start();
-
-        // stderr：解析总时长与进度（ffmpeg 的 -progress 也写在这里）
-        final double[] totalSec = {-1};
-        final int[] lastFrame = {0};
-        Thread errThread = new Thread(() -> {
-            try (var r = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(p.getErrorStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    if (cb.cancelled()) break;
-                    String t = line.trim();
-                    if (t.startsWith("Duration:")) {
-                        totalSec[0] = parseDuration(t);
-                    } else if (t.startsWith("out_time_ms=")) {
-                        double sec = parseLong(t.substring("out_time_ms=".length())) / 1_000_000.0;
-                        if (sec > 0) {
-                            double frac = totalSec[0] > 0 ? Math.min(1.0, sec / totalSec[0]) : -1;
-                            cb.update(frac, String.format(Locale.ROOT,
-                                    "%s %.0f 秒 / %s", whatTaken, sec,
-                                    totalSec[0] > 0 ? String.format(Locale.ROOT, "%.0f 秒", totalSec[0]) : "未知"));
-                        }
-                    } else if (t.startsWith("frame=")) {
-                        lastFrame[0] = (int) parseLong(t.substring("frame=".length()));
-                    }
-                }
-            } catch (Throwable ignored) {
-                // 进程结束/取消时读流会抛异常，属正常
-            }
-        }, "Projector-ffmpeg-log");
-        errThread.setDaemon(true);
-        errThread.start();
-
-        // 读 stdout（ZIP 模式）
-        final Exception[] readerError = {null};
-        Thread outThread = null;
-        if (reader != null) {
-            outThread = new Thread(() -> {
-                try (InputStream in = new BufferedInputStream(p.getInputStream(), 1 << 16)) {
-                    reader.read(in);
-                } catch (Exception ex) {
-                    readerError[0] = ex;
-                }
-            }, "Projector-ffmpeg-out");
-            outThread.setDaemon(true);
-            outThread.start();
-        }
-
-        // 等待结束，同时响应取消
-        while (!p.waitFor(200, TimeUnit.MILLISECONDS)) {
-            if (cb.cancelled()) {
-                p.destroy();
-                if (!p.waitFor(3, TimeUnit.SECONDS)) p.destroyForcibly();
-                return new Result(false, "已取消", null);
-            }
-        }
-        if (outThread != null) outThread.join(10_000);
-        int code = p.exitValue();
-        if (code != 0) {
-            return new Result(false, "ffmpeg 退出码 " + code + "（源文件可能是不支持的编码）", null);
-        }
-        if (readerError[0] != null) {
-            throw readerError[0];
-        }
-        if (lastFrame[0] <= 0) {
-            return new Result(false, "没有产出任何帧（视频时长可能为 0）", null);
-        }
-        cb.update(1.0, "完成：" + lastFrame[0] + " 帧");
-        return new Result(true, "完成：" + lastFrame[0] + " 帧", null);
-    }
-
     /** 解析 {@code Duration: 00:01:23.45, ...}。 */
-    private static double parseDuration(String line) {
-        int i = line.indexOf(':');
-        if (i < 0) return -1;
-        String s = line.substring(i + 1).trim();
-        int comma = s.indexOf(',');
-        if (comma > 0) s = s.substring(0, comma);
-        String[] parts = s.split(":");
-        if (parts.length != 3) return -1;
-        try {
-            return Integer.parseInt(parts[0].trim()) * 3600.0
-                    + Integer.parseInt(parts[1].trim()) * 60.0
-                    + Double.parseDouble(parts[2].trim());
-        } catch (Exception ex) {
-            return -1;
-        }
-    }
-
-    private static long parseLong(String s) {
-        try {
-            return Long.parseLong(s.trim().split("\\s+")[0]);
-        } catch (Exception ex) {
-            return 0;
-        }
-    }
 }

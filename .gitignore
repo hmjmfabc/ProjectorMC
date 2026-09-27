@@ -54,6 +54,11 @@ logs_copy/
 !/tmp/v*/sample.mjpg
 # 与本模组无关、恰好放在构建工作区里的其它项目目录（绝不能被 git add -A 扫进本仓库）
 /NetMusic-1.21/
+# ⚠ WaterMedia 的源码/二进制：PolyForm Strict 1.0.0（禁止使用与再分发），
+#   只作为「查它公开 API 名字」的参考资料放在工作区，**绝不能进本仓库**。
+/watermedia*/
+/waterframes*/
+/watervision*/
 # 会话导出与根目录散落的字体副本（构建只读 src/main/resources 下的那份）
 dsh-session-*.zip
 /minecraft.ttf

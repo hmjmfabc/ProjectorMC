@@ -17,6 +17,12 @@ Bundled third-party components
   - jflac-codec 1.5.3 (FLAC) — Josh Coalson / jFLAC project, BSD-style license.
   None of these libraries are modified, and none of their source is copied into
   this project's own source tree.
+* Optional runtime interop with WaterMedia (https://modrinth.com/mod/watermedia):
+  no source code, classes or binaries from that project are used, compiled against or
+  bundled. When it happens to be installed, this mod calls its publicly documented API
+  by reflection (name lookup at runtime) so its decoders can play common video formats.
+  WaterMedia is licensed under PolyForm Strict 1.0.0, which is not compatible with this
+  project's Apache-2.0; keeping the dependency optional and reflective is deliberate.
 * Fonts shipped in assets/projector/font/ (minecraft.ttf, caviar_dreams.ttf)
   are the property of their respective authors and are not covered by
   the Apache License of this project. Verify their terms before redistributing.

@@ -758,6 +758,23 @@ public final class MediaCache {
     }
 
     /** 网络线程/工作线程调用：数据到手后完成解码。 */
+    /**
+     * 【27.1.2】登记一份「我们不解码、交给外部解码器放」的视频。
+     *
+     * <p>它没有内置帧索引，走 {@link #finish} 会因为它「不是内置格式」被判解码失败
+     * （然后整段下载的标记被撤掉、控件卡在加载中）。这里只做两件事：
+     * 清掉失败标记、把哈希指向本地文件 —— 播放时由外部解码器直接打开这个文件。</p>
+     */
+    public static void registerExternal(String hash, @Nullable Path path) {
+        if (hash == null || hash.isEmpty() || path == null) {
+            return;
+        }
+        LoadState st = state(hash);
+        st.failed = false;
+        st.attempts = 0;
+        LocalMedia.registerCache(hash, path);
+    }
+
     public static void finish(String hash, byte[] data, @Nullable Path path, boolean video, int frame) {
         if (data == null || data.length == 0) {
             Projector.LOGGER.warn("[Projector] 媒体 {} 数据为空（path={}）", shortHash(hash), path);

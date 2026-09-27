@@ -66,7 +66,6 @@ public final class ProjectorConfig {
     public final ModConfigSpec.BooleanValue allowBackgroundVideoCache;
 
     // ---- 视频转换 ----
-    public final ModConfigSpec.ConfigValue<String> ffmpegPath;
     public final ModConfigSpec.IntValue convertFps;
     public final ModConfigSpec.IntValue convertMaxSide;
     public final ModConfigSpec.IntValue convertQuality;
@@ -221,17 +220,11 @@ public final class ProjectorConfig {
         b.pop();
 
         b.comment("视频转换（MP4 等 -> MJPEG / ZIP 帧序列）").push("convert");
-        ffmpegPath = b.comment("ffmpeg 可执行文件的完整路径。留空则自动查找："
-                        + "系统 PATH、Termux 的 /data/data/com.termux/files/usr/bin/、"
-                        + "以及游戏目录下的 ffmpeg。\n"
-                        + "Android/Termux 上安装：pkg install ffmpeg\n"
-                        + "没有 ffmpeg 时无法解码 H.264/MP4，界面上会给出提示。")
-                .define("ffmpegPath", "");
         convertFps = b.comment("转换后的帧率。帧率越高越流畅、文件越大（每帧都是一张 JPEG）。")
                 .defineInRange("fps", 10, 1, 30);
         convertMaxSide = b.comment("转换后画面的最大边长（像素）。视频会被等比缩放到不超过该值。")
                 .defineInRange("maxSide", 512, 64, 2048);
-        convertQuality = b.comment("MJPEG 画质，1（最好/最大）~ 31（最差/最小），对应 ffmpeg 的 -q:v。")
+        convertQuality = b.comment("MJPEG 画质，1（最好/最大）~ 31（最差/最小）。")
                 .defineInRange("quality", 5, 1, 31);
         b.pop();
 

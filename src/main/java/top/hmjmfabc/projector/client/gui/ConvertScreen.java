@@ -7,7 +7,6 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import top.hmjmfabc.projector.client.media.LocalMedia;
 import top.hmjmfabc.projector.client.media.MediaCache;
-import top.hmjmfabc.projector.client.media.convert.Ffmpeg;
 import top.hmjmfabc.projector.client.media.convert.JcodecBackend;
 import top.hmjmfabc.projector.client.media.convert.VideoConverter;
 
@@ -101,8 +100,8 @@ public class ConvertScreen extends ProjectorScreen {
     private void buildLayout() {
         // 【重要】这里绝不能做任何可能阻塞的事（起进程、等超时、网络）。
         // 界面初始化在渲染线程上跑，一旦阻塞就是「只有标题的空屏」。
-        // 所以只做一次纯文件检查，真正的 ffmpeg -version 验证推迟到
-        // 「点开始转换」之后（那时已经在后台线程上）。
+        // 这里只登记控件与文字，真正的解码器检查推迟到「点开始转换」之后
+        //（那时已经在后台线程上）。
         clearWidgets();
         lines.clear();
 
@@ -128,22 +127,15 @@ public class ConvertScreen extends ProjectorScreen {
         text(clip(source.getFileName().toString(), cw), cx, vy, 0xFFFFFFFF);
         vy += 20;
 
-        Path ffmpeg = Ffmpeg.quickPath();
-        if (ffmpeg == null) {
-            text("使用内置解码器（纯 Java，无需安装任何东西）", cx, vy, 0xFF66DD88);
-            vy += 12;
-            text("支持 MP4 / MOV / MKV 里的 H.264。H.265 / AV1 不支持，", cx, vy, 0xFFAAAAAA);
-            vy += 11;
-            text("桌面端若装了 ffmpeg 会优先用它（更快、编码更全）。", cx, vy, 0xFFAAAAAA);
-            vy += 11;
-            text("注意：纯 Java 解码较慢，耗时≈源视频长度（1080p 约 1~3 倍），", cx, vy, 0xFFFFCC66);
-            vy += 11;
-            text("与输出帧率/画面大小无关；嫌慢就限制转换时长。", cx, vy, 0xFFFFCC66);
-            vy += 20;
-        } else {
-            text("检测到 ffmpeg，将优先使用它（更快）", cx, vy, 0xFF66DD88);
-            vy += 20;
-        }
+        // 【27.1.2】只有内置解码器这一条路了（ffmpeg 已砍掉）
+        text("使用内置解码器（纯 Java，无需安装任何东西）", cx, vy, 0xFF66DD88);
+        vy += 12;
+        text("支持 MP4 / MOV / MKV 里的 H.264。H.265 / AV1 不支持；", cx, vy, 0xFFAAAAAA);
+        vy += 11;
+        text("注意：纯 Java 解码较慢，耗时≈源视频长度（1080p 约 1~3 倍），", cx, vy, 0xFFFFCC66);
+        vy += 11;
+        text("与输出帧率/画面大小无关；嫌慢就限制转换时长。", cx, vy, 0xFFFFCC66);
+        vy += 20;
 
         text("目标格式", cx, vy, 0xFFAAAAAA);
         vy += 14;
@@ -193,7 +185,7 @@ public class ConvertScreen extends ProjectorScreen {
             redButton("取消转换", cx, by, cw / 2 - 4, 20, b -> cancel.set(true));
         } else {
             button("开始转换", cx, by, cw / 2 - 4, 20, b -> start())
-                    .active = ffmpeg != null || JcodecBackend.available();
+                    .active = JcodecBackend.available();
         }
         button("返回", cx + cw / 2 + 4, by, cw / 2 - 4, 20, b -> close());
 
@@ -247,7 +239,6 @@ public class ConvertScreen extends ProjectorScreen {
         rebuildWidgets();
         MediaCache.worker().execute(() -> {
             // 这里是后台线程：可以安全地做阻塞式探测
-            Ffmpeg.locateBlocking();
             VideoConverter.Result r = VideoConverter.convert(source, dst, options,
                     new VideoConverter.Progress() {
                         @Override

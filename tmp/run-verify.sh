@@ -20,5 +20,11 @@ NIGHTCONF=$(find $HOME/.gradle/caches/modules-2/files-2.1/com.electronwill.night
 CP="$MCJAR:${EXTRA}${NIGHTCONF}build/classes/java/main"
 ./gradlew build --offline -q 2>&1 | grep -E "error:" -A3 || true
 DIR=$1; CLS=$2
-javac -encoding UTF-8 -cp "$CP" -d "$DIR" "$DIR/$CLS.java"
+# 先删旧 class：否则编译失败时会跑到上一轮的产物，测试「假通过」
+rm -rf "$DIR"/*.class
+if ! javac -encoding UTF-8 -cp "$CP" -d "$DIR" "$DIR/$CLS.java" > "$DIR/.javac.log" 2>&1; then
+  echo "== COMPILE FAILED =="
+  grep -E "error" "$DIR/.javac.log" | head -5
+  exit 1
+fi
 java -Dfile.encoding=UTF-8 -cp "$CP:$DIR" "$CLS"

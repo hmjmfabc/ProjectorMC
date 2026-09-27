@@ -214,6 +214,8 @@ public class WidgetEditorScreen extends ProjectorScreen {
             button("\u66ff\u6362\u89c6\u9891", cx + 4, y, cw - 8, 20, b ->
                     openChild(new MediaPickerScreen(this, plane, true, vw)));
             y += 24;
+            // 【27.1.2】不提供「播放后端」选项：能放就放，放不了自动换另一条路。
+            //（控件里仍保留 backend 字段以兼容旧存档，界面不再暴露。）
             y = sliderRow(cx, y, cw, "\u5bbd\u5ea6", 1, 512, vw.w, true, v -> vw.w = Math.max(0.5, v));
             y = sliderRow(cx, y, cw, "\u9ad8\u5ea6", 1, 512, vw.h, true, v -> vw.h = Math.max(0.5, v));
             y = sliderRow(cx, y, cw, "\u65cb\u8f6c\u89d2\u5ea6", -180, 180, vw.rot, true, v -> vw.rot = v);

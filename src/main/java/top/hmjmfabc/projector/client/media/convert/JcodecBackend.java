@@ -32,7 +32,7 @@ import java.util.zip.ZipOutputStream;
  *
  * <p>这是 Android 上唯一可行的方案：游戏跑在启动器的应用沙箱里
  * （实测 uid 与 Termux 不同，且 {@code /data/data/com.termux} 是 {@code drwx------}），
- * 既读不到 Termux 装的 ffmpeg，共享存储又挂载为 {@code noexec}，
+ * 既读不到沙箱外的外部程序（共享存储又是 noexec），共享存储又挂载为 {@code noexec}，
  * 打包 {@code .so} 也不符合本项目「模组本体不含任何 .so」的约束。</p>
  *
  * <p>两条流水线拼起来：</p>
@@ -326,8 +326,8 @@ public final class JcodecBackend {
     /**
      * 把界面上的「ffmpeg 风格画质 1~31（越小越好）」换算成 stb 的 1~100（越大越好）。
      */
-    private static int stbQuality(int ffmpegStyle) {
-        int q = 100 - (Math.max(1, Math.min(31, ffmpegStyle)) - 1) * 3;
+    private static int stbQuality(int uiQuality) {
+        int q = 100 - (Math.max(1, Math.min(31, uiQuality)) - 1) * 3;
         return Math.max(25, Math.min(95, q));
     }
 

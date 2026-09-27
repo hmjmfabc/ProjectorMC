@@ -79,6 +79,19 @@ public final class ProjectorClient {
                         || name.endsWith(".mp4") || name.endsWith(".webm")
                         || name.endsWith(".zip");
                 if (video) {
+                    // 【27.1.2】统一入口：内置解得了就用内置；解不了但在外部解码器射程内，
+                    // 就只读容器头拿宽高（画面比例才不会错），帧数交给它自己管。
+                    String bare = path.getFileName().toString();
+                    if (!top.hmjmfabc.projector.client.media.LocalMedia.extension(bare)
+                            .matches("mjpg|mjpeg|zip")) {
+                        var ext = top.hmjmfabc.projector.client.media.MediaUploader.probeVideo(path);
+                        if (ext != null) {
+                            return new top.hmjmfabc.projector.common.platform.MediaMeta(
+                                    ext.width(), ext.height(), Math.max(1, ext.frames()),
+                                    ext.fpsOrDefault());
+                        }
+                        return top.hmjmfabc.projector.common.platform.MediaMeta.empty();
+                    }
                     var src = top.hmjmfabc.projector.client.media.VideoSource.open(path);
                     if (src == null) {
                         return top.hmjmfabc.projector.common.platform.MediaMeta.empty();
@@ -274,6 +287,8 @@ public final class ProjectorClient {
     private void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
         // 【27.1.1】退出世界必须停音乐并清缓存：否则声道会被一直占着，下一局还在响
         top.hmjmfabc.projector.client.music.MusicManager.clearAll();
+        // 【27.1.2】把交给 WaterMedia 的视频会话全部释放（否则换世界后解码器还挂着）
+        top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.releaseAll();
         PlaneCache.clear();
         SelectionState.clear();
         MediaCache.clearAll();

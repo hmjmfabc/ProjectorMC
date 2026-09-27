@@ -62,10 +62,10 @@ public class MediaPickerScreen extends ProjectorScreen {
                 f -> (f.video() ? "\u89c6\u9891  " : "\u56fe\u7247  ") + humanSize(f.size()),
                 (f, idx) -> {
                     selected = f;
-                    // 提前告诉玩家这个文件模组解不了，并指出转换按钮在哪
+                    // 解不了的文件提前说一声，并指出转换按钮在哪（不涉及任何后端名词）
                     status = needsConvert(f)
-                            ? "\u8be5\u683c\u5f0f\u6a21\u7ec4\u65e0\u6cd5\u76f4\u63a5\u64ad\u653e\uff0c"
-                              + "\u8bf7\u7528\u53f3\u4fa7\u7684\u300c\u89c6\u9891\u683c\u5f0f\u8f6c\u6362\u2026\u300d"
+                            ? "\u8fd9\u4e2a\u89c6\u9891\u76f4\u63a5\u653e\u4e0d\u4e86\uff0c"
+                              + "\u53ef\u4ee5\u7528\u53f3\u4fa7\u7684\u300c\u89c6\u9891\u683c\u5f0f\u8f6c\u6362\u2026\u300d"
                             : "";
                 });
         l.setItems(files);
@@ -84,7 +84,7 @@ public class MediaPickerScreen extends ProjectorScreen {
             LocalMedia.ensureDirectories();
             status = LocalMedia.mediaDir().toString();
         });
-        // 视频格式转换：MP4/MKV 这类模组解不了的格式，交给 ffmpeg 转成 MJPEG / ZIP 帧序列
+        // 视频格式转换：直接放不了的格式，在这里转成能放的（判定见 needsConvert）
         button("\u89c6\u9891\u683c\u5f0f\u8f6c\u6362\u2026", bx, this.height - pad - 96, Math.max(60, bw), 20, b -> {            if (selected == null) {
                 status = "\u8bf7\u5148\u5728\u5de6\u4fa7\u9009\u4e2d\u4e00\u4e2a\u89c6\u9891\u6587\u4ef6";
                 return;
@@ -107,14 +107,18 @@ public class MediaPickerScreen extends ProjectorScreen {
         orig.active = video && serverAllows;
     }
 
-    /** 该文件是不是「模组解不了、需要先转换」的格式。 */
+    /**
+     * 该文件是不是「本模组直接放不了、需要先转换」的格式。
+     *
+     * <p>判据只有一条：{@link MediaUploader#probeVideo} 认不认它
+     * （内置能解，或者外部解码器能放，都算认）。</p>
+     */
     private static boolean needsConvert(LocalMedia.MediaFile f) {
         if (f == null || !f.video()) return false;
-        if (top.hmjmfabc.projector.client.media.VideoSource.open(f.path()) != null) {
-            return false;
+        if (MediaUploader.externalVideo(f.path())) {
+            return false;      // 能直接放：不必转、也不必抽帧压缩
         }
-        String ext = LocalMedia.extension(f.name());
-        return !ext.equals("mjpg") && !ext.equals("mjpeg") && !ext.equals("zip");
+        return MediaUploader.probeVideo(f.path()) == null;
     }
 
     private void confirm() {
@@ -162,18 +166,17 @@ public class MediaPickerScreen extends ProjectorScreen {
             int frames = 1;
             long[] frameTable = new long[0];
             if (isVideo) {
-                top.hmjmfabc.projector.client.media.VideoSource src =
-                        top.hmjmfabc.projector.client.media.VideoSource.open(sendPath);
-                if (src == null) {
+                MediaUploader.VideoMeta meta = MediaUploader.probeVideo(sendPath);
+                if (meta == null) {
                     Minecraft.getInstance().execute(() -> status =
-                            "\u65e0\u6cd5\u8bc6\u522b\u7684\u89c6\u9891\u683c\u5f0f\uff08\u8bf7\u4f7f\u7528 MJPEG \u6216 ZIP \u5e27\u5e8f\u5217\uff09");
+                            "\u8fd9\u4e2a\u89c6\u9891\u6253\u4e0d\u5f00\uff08\u6587\u4ef6\u53ef\u80fd"
+                            + "\u5df2\u635f\u574f\uff0c\u6216\u683c\u5f0f\u4e0d\u652f\u6301\uff09");
                     return;
                 }
-                width = src.width;
-                height = src.height;
-                frames = src.frameCount;
-                frameTable = src.exportFrameTable();
-                src.close();
+                width = meta.width();
+                height = meta.height();
+                frames = Math.max(1, meta.frames());
+                frameTable = meta.frameTable();
             } else {
                 int[] sz = top.hmjmfabc.projector.client.media.ImageCodec.size(data, 0, data.length);
                 if (sz == null) {
@@ -183,8 +186,14 @@ public class MediaPickerScreen extends ProjectorScreen {
                 width = sz[0];
                 height = sz[1];
             }
-            // 先让本地纹理就绪，玩家不必等服务端往返
-            MediaCache.finish(hash, data, sendPath, isVideo, 0);
+            // 先让本地就绪，玩家不必等服务端往返。
+            // 交给外部解码器放的格式没有内置帧索引，只登记文件本身
+            //（走 finish 会因为它「不是 MJPEG/ZIP」而被标成解码失败）。
+            if (isVideo && MediaUploader.externalVideo(sendPath)) {
+                MediaCache.registerExternal(hash, sendPath);
+            } else {
+                MediaCache.finish(hash, data, sendPath, isVideo, 0);
+            }
             final int fW = width, fH = height, fFrames = frames;
             final long[] fTable = frameTable;
             final String displayName = picked.name();
