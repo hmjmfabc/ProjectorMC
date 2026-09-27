@@ -95,6 +95,8 @@ public final class ProjectorConfig {
     public final ModConfigSpec.IntValue planeSyncDistance;
     /** 【hotfix-99】用平面所在位置的真实光照渲染控件（光影下更像普通表面）。 */
     public final ModConfigSpec.BooleanValue realLightForWidgets;
+    /** 【hotfix-II】从背面「贴面透墙」看到内容的最大距离（0 = 只有贴到平面时）。 */
+    public final ModConfigSpec.DoubleValue renderBackfaceSeeThrough;
 
     private ProjectorConfig(ModConfigSpec.Builder b) {
         b.comment("平面（Plane）相关限制").push("planes");
@@ -285,6 +287,16 @@ public final class ProjectorConfig {
                         + "太小会与墙面 Z-fighting（远处与光影下尤其明显，表现为内容闪烁）；\n"
                         + "太大会在斜着看时发现内容「浮」在墙上。默认 0.02 格（2 厘米）。")
                 .defineInRange("surfaceBias", 0.02, 0.002, 0.1);
+        // 【hotfix-II】反面（站在平面背面）能不能看到内容。
+        // 平面是单面的，站到背面时方块本体挡在相机与内容之间 ⇒ 默认什么都看不到；
+        // 这个键放开「贴着平面时关掉深度测试」的距离，几何位置一个像素都不动。
+        renderBackfaceSeeThrough = b.comment("【反面】从背面「透墙」看到内容的最大距离（格，默认 0）。\n"
+                        + "平面正面在哪、背面也画在哪（不做任何位移）；站在背面时方块本体本来会挡住内容，\n"
+                        + "所以相机与平面包围盒的距离不超过这个值时，这一帧就关掉深度测试把内容画出来。\n"
+                        + "⚠ 这里的 0 **不是**「不限」：0 = 必须贴到平面（包围盒自带 1.25 格余量，\n"
+                        + "   约等于「站在平面旁边」）。调大 = 从更远处也能透墙看到内容，也更容易穿墙。\n"
+                        + "超出这个距离按正常遮挡处理：隔着方块看不到，但墙上开洞或方块被挖掉时能看见。")
+                .defineInRange("backfaceSeeThroughRange", 0.0, 0.0, 64.0);
         // 【hotfix-99】真实光照：光影包会把「天空光 15 + 方块光 14」也当作很亮，
         // 内容于是看着像在发光。打开这一项后，控件用**平面所在位置的真实光照**渲染。
         planeSyncDistance = b.comment("【流量】服务端把平面同步给客户端的最远距离（方块，0 = 不限）。\n"

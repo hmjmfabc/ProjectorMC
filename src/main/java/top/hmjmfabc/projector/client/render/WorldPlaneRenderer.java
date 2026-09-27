@@ -20,7 +20,8 @@ import java.util.List;
 /**
  * 世界内平面渲染器。
  *
- * <p>每帧（在 {@code RenderLevelStageEvent} 的 AFTER_TRANSLUCENT_BLOCKS 阶段）
+ * <p>每帧（在 {@code RenderLevelStageEvent} 的 AFTER_ENTITIES 阶段：
+ * 必须在半透明方块之前，否则水面/玻璃会把水下内容整片挡掉）
  * 遍历当前维度内、距离玩家一定范围内的平面，把其中的控件转成四边形提交。</p>
  *
  * <p>性能策略：</p>
@@ -55,6 +56,10 @@ public final class WorldPlaneRenderer {
 
     private int lastPlanes;
     private int lastQuads;
+    /** 【hotfix-II】每个平面上一次报告过的反面状态（状态变了才打日志，避免刷屏）。 */
+    private final java.util.Map<java.util.UUID, String> reportedBackface = new java.util.HashMap<>();
+    /** 反面日志的限流时间戳。 */
+    private final java.util.Map<java.util.UUID, Long> lastBackfaceMsByPlane = new java.util.HashMap<>();
 
     public void render(PoseStack pose, Camera camera, float partialTick) {
         Minecraft mc = Minecraft.getInstance();
@@ -102,12 +107,46 @@ public final class WorldPlaneRenderer {
     }
 
     private void drawPlane(PoseStack pose, Plane plane, Vec3 cameraPos) {
-        PlaneCanvas canvas = plane.canvas();
-        Vec3 origin = canvas.originWorld();
         double[] axisX = axis(BlockFace.right(plane.face));
         double[] axisY = axis(BlockFace.up(plane.face));
-        // 外法线：既用于 PlaneRenderContext（顶点沿它偏移），也是绕序判定的依据
+        // 外法线：既用于 PlaneRenderContext（顶点沿它偏移），也是正反面判定的依据
         double[] normal = axis(BlockFace.normal(plane.face));
+        // 【hotfix-II】正反面 + 「贴面透墙」判定：判据全是纯函数（PlaneSide / PlaneDistance），
+        // 符号用具体坐标钉在 tmp/v29 里 —— 98 那次把符号写反，交付即「平面上什么都看不见」。
+        net.minecraft.world.phys.AABB bb = plane.bounds();
+        Vec3 center = bb.getCenter();
+        boolean backside = !PlaneSide.isFront(normal,
+                new double[]{center.x, center.y, center.z},
+                new double[]{cameraPos.x, cameraPos.y, cameraPos.z});
+        double distance = PlaneDistance.distanceToBox(cameraPos.x, cameraPos.y, cameraPos.z,
+                bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ);
+        double range = backfaceSeeThroughRange();
+        boolean throughWall = PlaneSide.seeThroughFromBack(backside, distance, range);
+        reportBackface(plane, backside, distance, range, throughWall);
+        try {
+            // 反面要同时做两件事，缺一个都看不到：
+            //   ① 翻绕序（RenderType.text 默认 CULL，背面朝外会被整批剔除）；
+            //   ② 贴着平面时关掉深度测试（否则方块本体挡在相机与内容之间）。
+            // 几何位置一个像素都不动 —— 「正面在哪背面就显示在哪」。
+            QuadCollector.setBackfaceView(backside);
+            QuadCollector.setSeeThrough(throughWall);
+            drawPlaneBody(pose, plane, cameraPos, axisX, axisY, normal);
+        } finally {
+            // 这两个开关是「按平面」的：画完立刻复位，漏出去会让后面的平面跟着穿墙
+            QuadCollector.resetBackface();
+        }
+    }
+
+    /**
+     * 真正提交四边形的那一段（正反面开关已由 {@link #drawPlane} 设好）。
+     *
+     * <p>拆出来只是为了能用 try/finally 保证开关复位 —— 下面有一堆 continue/异常分支，
+     * 散着写迟早会漏掉一条。</p>
+     */
+    private void drawPlaneBody(PoseStack pose, Plane plane, Vec3 cameraPos,
+                               double[] axisX, double[] axisY, double[] normal) {
+        PlaneCanvas canvas = plane.canvas();
+        Vec3 origin = canvas.originWorld();
         // 画布坐标 (0,0) 是玩家命中的那个点；为了让方块矩形不出现负坐标，
         // 它们被整体平移了 canvasOffset，因此绘制原点要沿 u/v 轴反向平移同样的量。
         final double offU = plane.canvasOffsetX / PlaneCanvas.UNITS_PER_BLOCK;
@@ -120,9 +159,6 @@ public final class WorldPlaneRenderer {
                 origin.y - axisX[1] * offU - axisY[1] * offV - cameraPos.y,
                 origin.z - axisX[2] * offU - axisY[2] * offV - cameraPos.z};
 
-        // 【hotfix-106】不做任何反面处理：背面朝外时四边形会被 CULL 剔除，
-        // 也就是「站到平面后面看不到内容」—— 用户要的「彻底不透视」。
-        // （104 那套「贴脸透视」虽然能看到内容，但本质是关掉深度测试 ⇒ 会透过地形看见。）
         // 【hotfix-99】光影兼容：可选用平面锚点处的**真实光照**画控件
         //（与旁边的方块表面同一份光照 ⇒ 不会被当成发光体）。
         applyWidgetLight(plane);
@@ -215,6 +251,49 @@ public final class WorldPlaneRenderer {
                     plane.widgets.size(), summary);
         }
         collector.flush(pose);
+    }
+
+    /**
+     * 【hotfix-II】「贴面透墙」的距离门槛（格）。
+     *
+     * <p>配置 {@code render.backfaceSeeThroughRange}，默认 <b>0</b>：
+     * 只有相机进入平面包围盒（包围盒自带 1.25 格 padding ⇒ 约等于「站在平面旁边」）时，
+     * 从背面才透墙看到内容；离远了按正常遮挡处理（隔着墙看不见，
+     * 但墙上开洞或方块被挖掉时照样能看到 —— 因为绕序已经翻回来了）。
+     * 配置读不到（极早期）时返回 0，绝不因此放宽。</p>
+     */
+    private static double backfaceSeeThroughRange() {
+        try {
+            return ProjectorConfig.INSTANCE.renderBackfaceSeeThrough.get();
+        } catch (Throwable t) {
+            return 0.0;
+        }
+    }
+
+    /**
+     * 反面状态变化时留一行日志（每平面 1 秒最多一行）。
+     *
+     * <p>「从背面看不见」这种问题必须能一眼看出是哪一种：是判定说「在正面」（那内容本该可见），
+     * 还是判定说「在背面、超出门槛」（那是设计如此，走近就会透出来）。</p>
+     */
+    private void reportBackface(Plane plane, boolean backside, double distance,
+                                double range, boolean throughWall) {
+        if (plane == null || plane.id == null) return;
+        String state = !backside ? "正面-正常绘制"
+                : (throughWall ? "反面-贴面透墙" : "反面-正常遮挡");
+        if (state.equals(reportedBackface.get(plane.id))) return;
+        long now = System.currentTimeMillis();
+        if (now - lastBackfaceMsByPlane.getOrDefault(plane.id, 0L) < 1000L) return;
+        reportedBackface.put(plane.id, state);
+        lastBackfaceMsByPlane.put(plane.id, now);
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector] 平面视野: {} 朝向={} 相机到平面={} 格（透墙门槛={} 格）-> {}{}",
+                plane.id.toString().substring(0, 8), plane.face.getName(),
+                String.format(java.util.Locale.ROOT, "%.2f", distance),
+                String.format(java.util.Locale.ROOT, "%.2f", range),
+                state,
+                backside && !throughWall
+                        ? "（隔着方块看不到；贴到平面就会透出来）" : "");
     }
 
     /**

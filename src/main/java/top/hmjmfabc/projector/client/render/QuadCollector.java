@@ -62,6 +62,41 @@ public final class QuadCollector {
         frameLight = packedLight;
     }
 
+    // ------------------------------------------------------------------
+    // 【hotfix-II】从背面看时的两个开关（由 WorldPlaneRenderer 按平面设置）
+    // ------------------------------------------------------------------
+
+    /**
+     * 本帧是否正在渲染「从背面看」的平面。
+     *
+     * <p>必须翻绕序：{@code RenderType.text} 用默认 {@code CULL}，背面朝外的四边形
+     * 会被整批剔除（一个顶点都提交不上去）。翻绕序只改<b>顶点提交顺序</b>，
+     * 不动几何位置 —— 玩家要的是「正面在哪背面就显示在哪」。</p>
+     */
+    private static boolean backfaceView;
+
+    /**
+     * 是否关掉深度测试（= 透墙看到内容）。
+     *
+     * <p>只在「背面 <b>且</b> 贴着平面」时为真（判据见 {@code PlaneSide.seeThroughFromBack}）：
+     * 关掉深度测试会让内容画在所有几何之上，离得远就会透过地形看到它（穿墙）。</p>
+     */
+    private static boolean seeThrough;
+
+    public static void setBackfaceView(boolean value) {
+        backfaceView = value;
+    }
+
+    public static void setSeeThrough(boolean value) {
+        seeThrough = value;
+    }
+
+    /** 每个平面画完立刻复位：这两个开关是「按平面」的，漏给下一帧就会到处穿墙。 */
+    public static void resetBackface() {
+        backfaceView = false;
+        seeThrough = false;
+    }
+
     /** 本帧实际使用的光照值，由配置项 {@code render.avoidFullBrightLight} /
      *  {@code render.realLightForWidgets} 决定。 */
     private static int currentLight() {
@@ -108,6 +143,7 @@ public final class QuadCollector {
     public static void beginFrame() {
         poolIndex = 0;
         frameQuadTotal = 0;
+        resetBackface();            // 兜底：上一帧若有异常退出，别把「透墙」状态带到新一帧
     }
 
     /** 本帧剩余可提交的四边形数量。 */
@@ -205,9 +241,11 @@ public final class QuadCollector {
         // orient = 三角形 a→b→c 在画布平面内的有向面积符号
         double orient = (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
         boolean flip = orient * (cx2 * nx + cy2 * ny + cz2 * nz) < 0;
-        // 【hotfix-106】反面一律**不画**（用户要求：彻底不透视）。
-        // RenderType.text 用默认 CULL，背面朝外的四边形会被剔除 —— 这正是我们要的：
-        // 站到平面后面就看不到内容（但也不会像「关掉深度测试」那样穿墙）。
+        // 【hotfix-II】从背面看时把绕序翻过来（否则背面朝外 ⇒ 被 CULL 整批剔除）。
+        // 只改顶点提交顺序，几何位置一个像素都不动。
+        if (backfaceView) {
+            flip = !flip;
+        }
 
         Quad q = obtain();
         q.argb = argb;
@@ -385,7 +423,7 @@ public final class QuadCollector {
     @Nullable
     public static RenderType fontType(ResourceLocation atlas) {
         ResourceLocation real = atlas == null ? FontManager.fallbackAtlas() : atlas;
-        return real == null ? null : RenderType.text(real);
+        return real == null ? null : textured(real);
     }
 
     /**
@@ -403,7 +441,22 @@ public final class QuadCollector {
         // 纹理也就绪，但屏幕上一个像素都没有」的情况。
         // {@code text} 走 rendertype_text：只要纹理是 RGBA、UV 正确、光照填全亮，
         // 就是一条非常朴素可靠的路径，图片用起来同样正确。
-        return RenderType.text(texture);
+        return textured(texture);
+    }
+
+    /**
+     * 【hotfix-II】按「现在是不是在看反面」选纹理管线。
+     *
+     * <p>{@code RenderType.textSeeThrough} 就是 {@code text} 去掉深度测试：
+     * 关掉深度测试是为了让内容不被方块本体挡住（几何位置**一个像素都不动**，
+     * 所以从正面看在哪、从背面看还在哪）。它默认同样是 {@code CULL}，
+     * 因此反面那一帧必须配合 {@link #setBackfaceView} 翻绕序，缺一个都看不到。</p>
+     *
+     * <p>文字与图片**共用**这一个入口：以前只有图片那一支换了渲染类型，
+     * 于是玩家看到「图片/视频会穿墙、文字和时钟不会」这种只坏一半的现象。</p>
+     */
+    private static RenderType textured(ResourceLocation texture) {
+        return seeThrough ? RenderType.textSeeThrough(texture) : RenderType.text(texture);
     }
 
     /**

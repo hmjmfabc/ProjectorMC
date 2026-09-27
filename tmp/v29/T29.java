@@ -3,6 +3,7 @@ package top.hmjmfabc.projector.client.media.wm;
 import net.minecraft.nbt.CompoundTag;
 import top.hmjmfabc.projector.client.media.VideoControls;
 import top.hmjmfabc.projector.client.media.VideoProbe;
+import top.hmjmfabc.projector.common.PlaneSide;
 import top.hmjmfabc.projector.common.widget.VideoWidget;
 
 import java.util.ArrayList;
@@ -512,9 +513,29 @@ public class T29 {
         String editor = readFile("src/main/java/top/hmjmfabc/projector/client/gui/WidgetEditorScreen.java");
         String renderer = readFile("src/main/java/top/hmjmfabc/projector/client/render/WidgetRenderer.java");
 
-        check("**不再处理反面**（背面朝外的四边形被 CULL 剔除 = 彻底不透视）",
-                !collector.contains("backfaceView") && !collector.contains("seeThrough")
-                        && !world.contains("backside") && !world.contains("BACKFACE_SEE_THROUGH"));
+        // ---- 反面（hotfix-II）：几何不动 + 翻绕序 + 贴面关深度测试 ----
+        check("反面翻绕序（否则背面朝外被 CULL 整批剔除）",
+                collector.contains("if (backfaceView)") && collector.contains("flip = !flip"));
+        check("文字与图片共用同一条管线（不再出现「只有一半看不到」）",
+                collector.contains("textured(real)")
+                        && collector.contains("return textured(texture);")
+                        && collector.contains("RenderType.textSeeThrough(texture)"));
+        check("透墙门槛走纯函数 + 配置（默认 0 = 只有贴到平面）",
+                world.contains("PlaneSide.seeThroughFromBack(")
+                        && world.contains("renderBackfaceSeeThrough.get()")
+                        && readFile("src/main/java/top/hmjmfabc/projector/ProjectorConfig.java")
+                                .contains("\"backfaceSeeThroughRange\", 0.0"));
+        // 符号必须用具体坐标跑一遍：98 那次 isFront 的符号写反，源码断言一条都没抓到
+        double[] southNormal = {0, 0, 1};
+        double[] planeCenter = {0.5, 0.5, 0.5};
+        check("朝南的墙：相机 z 更大 = 正面，z 更小 = 反面",
+                PlaneSide.isFront(southNormal, planeCenter, new double[]{0.5, 0.5, 3.5})
+                        && !PlaneSide.isFront(southNormal, planeCenter, new double[]{0.5, 0.5, -3.5}));
+        check("反面贴面才透墙（正面/远离都不透）",
+                PlaneSide.seeThroughFromBack(true, 0.0, 0.0)
+                        && !PlaneSide.seeThroughFromBack(true, 2.0, 0.0)
+                        && !PlaneSide.seeThroughFromBack(false, 0.0, 0.0)
+                        && PlaneSide.seeThroughFromBack(true, 5.0, 8.0));
         check("渲染阶段在半透明块之前（水面/玻璃不再挡掉水下内容）",
                 client.contains("AFTER_ENTITIES")
                         && !client.contains("Stage.AFTER_TRANSLUCENT_BLOCKS"));

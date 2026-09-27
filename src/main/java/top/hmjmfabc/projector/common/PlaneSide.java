@@ -36,4 +36,39 @@ public final class PlaneSide {
         // 恰好落在平面上（点积为 0）时按正面处理：那是最靠近的正常视角
         return dot >= 0.0;
     }
+
+    /**
+     * 从背面看时，这一帧要不要「透墙」把内容画出来（hotfix-II）。
+     *
+     * <p>平面是单面的：站在背面时四边形背面朝外、被 {@code CULL} 剔除；就算把绕序翻回来，
+     * 方块本体也挡在相机与内容之间 ⇒ 什么都看不到。让它可见只有两条路：</p>
+     * <ol>
+     *   <li>把内容挪到墙的另一面（Build 102/103 试过）—— <b>玩家实测否决</b>：
+     *       「正面在哪背面就显示在哪」，挪一格就会被看成「整体偏了一个方块」；</li>
+     *   <li>几何一个像素都不动，只在背面这一帧<b>关掉深度测试</b>（= 透墙）。
+     *       代价是离得远时会隔着地形看到内容（穿墙），所以必须配一个距离门槛。</li>
+     * </ol>
+     *
+     * <p>门槛口径：{@code 距离 ≤ range} 才透墙。这里的距离是「相机到平面包围盒的最近距离」
+     * ——包围盒自带 1.25 格 padding，所以 {@code range = 0} 的实际含义是
+     * 「站在平面旁边（1.25 格以内）」，而不是「永远看不到」。</p>
+     *
+     * <p><b>⚠ {@code range = 0} 不是「不限」</b>：与 {@link PlaneDistance#withinRange} 的约定相反
+     * （那边 0 = 不限）。两者相反是刻意的 —— 这一项描述的是「门开多大」，
+     * 0 = 门关到底，只留贴面那一点点。</p>
+     *
+     * @param backside         相机是否在背面（{@code !isFront(...)}）
+     * @param distanceToBounds 相机到平面包围盒的最近距离（格，盒内为 0）
+     * @param range            配置的透墙距离（格）
+     * @return true = 这一帧关闭深度测试，让内容从背面也能看到
+     */
+    public static boolean seeThroughFromBack(boolean backside, double distanceToBounds, double range) {
+        if (!backside) {
+            return false;                       // 正面永远走正常渲染（深度测试照旧）
+        }
+        if (Double.isNaN(distanceToBounds) || Double.isNaN(range)) {
+            return false;                       // 算不出来就按「看不见」处理，绝不因此穿墙
+        }
+        return distanceToBounds <= Math.max(0.0, range);
+    }
 }
