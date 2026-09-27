@@ -22,10 +22,25 @@ public record PlaneRenderContext(double[] axisX, double[] axisY, double[] normal
      * 深度缓冲精度下降时会出现闪烁的条纹），太大会在斜视时看出内容「浮」在墙上。
      * 0.006 方块 = 6 毫米，肉眼看不出来，但已经远高于远距离下的深度精度。</p>
      */
-    public static final double SURFACE_BIAS = 0.006;
+    public static final double SURFACE_BIAS = 0.02;
+
+    /**
+     * 实际使用的贴面偏移：配置 {@code render.surfaceBias}（默认 {@link #SURFACE_BIAS}）。
+     *
+     * <p>【hotfix-99】光影包（Iris）有自己的深度预通道与阴影偏移，0.006 格这种
+     * 「亚毫米级」的偏移在它眼里可能根本不算分离 ⇒ 内容与墙面互相打架 = 闪烁。
+     * 默认值提到 0.02 格（2 厘米，肉眼仍不可辨），并开放给玩家自己微调。</p>
+     */
+    public static double surfaceBias() {
+        try {
+            return top.hmjmfabc.projector.ProjectorConfig.INSTANCE.renderSurfaceBias.get();
+        } catch (Throwable t) {
+            return SURFACE_BIAS;
+        }
+    }
 
     /** 计算某个控件的分层深度。 */
     public double depthFor(Widget widget, double blockSurfaceDepth) {
-        return blockSurfaceDepth + SURFACE_BIAS + widget.zOff * LAYER_STEP;
+        return blockSurfaceDepth + surfaceBias() + widget.zOff * LAYER_STEP;
     }
 }

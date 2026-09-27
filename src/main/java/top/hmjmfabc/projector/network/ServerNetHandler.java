@@ -34,6 +34,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import top.hmjmfabc.projector.common.PlaneDistance;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -217,7 +221,10 @@ public final class ServerNetHandler {
         list.add(plane.save());
         tag.put("planes", list);
         tag.putBoolean("replace", false);
-        PacketDistributor.sendToPlayersInDimension(level, new Payloads.SyncPlanes(plane.dimension, tag));
+        // 【hotfix-101】只发给「手里有这个平面」的玩家。
+        // 以前是全维度广播：一个远处的平面被反复编辑时，每个在线玩家都在收它的完整数据。
+        // 注意：新建平面时订阅表里还没有它，所以这里要**并上**「此刻在范围内」的玩家。
+        sendToSubscribers(level, plane, tag);
     }
 
     /**
@@ -320,8 +327,41 @@ public final class ServerNetHandler {
     public static void broadcastDeletion(ServerLevel level, Plane plane) {
         CompoundTag tag = new CompoundTag();
         tag.putUUID("plane", plane.id);
-        PacketDistributor.sendToPlayersInDimension(level,
-                new Payloads.SyncPlanes(plane.dimension, tag));
+        sendToSubscribers(level, plane, tag);
+    }
+
+    /**
+     * 把一条平面相关的包发给「该收的人」：【hotfix-101】
+     * = 手里已经有它的玩家（订阅表）∪ 此刻在范围内的玩家。
+     *
+     * <p>后面那一半是为了新建平面：那时订阅表里还没有它，但站在旁边的玩家必须立刻收到。</p>
+     */
+    private static void sendToSubscribers(ServerLevel level, Plane plane, CompoundTag tag) {
+        Payloads.SyncPlanes packet = new Payloads.SyncPlanes(plane.dimension, tag);
+        double range = syncDistance();
+        boolean any = false;
+        for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
+            if (!player.level().dimension().location().equals(plane.dimension)) {
+                continue;
+            }
+            Set<UUID> known = KNOWN.get(player.getUUID());
+            boolean subscribed = known != null && known.contains(plane.id);
+            if (!subscribed
+                    && !PlaneDistance.withinRange(plane, player.getX(), player.getY(), player.getZ(), range)) {
+                continue;
+            }
+            PacketDistributor.sendToPlayer(player, packet);
+            if (known != null) {
+                known.add(plane.id);        // 发过就算他知道
+            }
+            any = true;
+        }
+        if (!any) {
+            // 没有任何人在范围内：不发。这是省流量的主要来源，但要留一行日志便于排查
+            //（例如「我明明建了平面却看不见」时先看这行）。
+            Projector.LOGGER.debug("[Projector][服务端][同步] 平面 {} 附近没有订阅者，跳过广播",
+                    plane.id.toString().substring(0, 8));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -358,6 +398,26 @@ public final class ServerNetHandler {
                 case "protectContent" -> {
                     if (!PlanePermissions.canToggleContentProtection(plane, player)) yield false;
                     plane.protectContent = args.getBoolean("value");
+                    yield true;
+                }
+                // 【hotfix-98】删除保护：只有 4 级 OP 能开关；开启后非 4 级 OP 删不掉这个平面。
+                // 默认是关的 —— 也就是说默认**任何人都能删除平面**（用户要求放开删除权限）。
+                case "protectDelete" -> {
+                    if (!PlanePermissions.canToggleDeleteProtection(player)) {
+                        player.displayClientMessage(
+                                Component.translatable("projector.msg.need_op4"), true);
+                        Projector.LOGGER.info(
+                                "[Projector][服务端][删除保护] 拒绝 {}（权限等级 {} < {}）平面={}",
+                                player.getGameProfile().getName(),
+                                PlanePermissions.opLevel(player),
+                                PlanePermissions.DELETE_PROTECT_LEVEL,
+                                plane.id.toString().substring(0, 8));
+                        yield false;
+                    }
+                    plane.deleteProtect = args.getBoolean("value");
+                    Projector.LOGGER.info("[Projector][服务端][删除保护] {} 把平面 {} 的删除保护设为 {}",
+                            player.getGameProfile().getName(),
+                            plane.id.toString().substring(0, 8), plane.deleteProtect);
                     yield true;
                 }
                 case "miningWarning" -> {
@@ -441,7 +501,19 @@ public final class ServerNetHandler {
                     yield true;
                 }
                 case "deletePlane" -> {
-                    if (!PlanePermissions.canDelete(plane, player)) yield false;
+                    if (!PlanePermissions.canDelete(plane, player)) {
+                        player.displayClientMessage(
+                                Component.translatable("projector.msg.delete_protected"), true);
+                        Projector.LOGGER.info(
+                                "[Projector][服务端][删除保护] 拒绝 {} 删除受保护的平面 {}（权限等级 {}）",
+                                player.getGameProfile().getName(),
+                                plane.id.toString().substring(0, 8),
+                                PlanePermissions.opLevel(player));
+                        yield false;
+                    }
+                    Projector.LOGGER.info("[Projector][服务端] {} 删除了平面 {}（删除保护={} 创建者={}）",
+                            player.getGameProfile().getName(),
+                            plane.id.toString().substring(0, 8), plane.deleteProtect, plane.creatorName);
                     data.remove(plane.dimension, plane);
                     broadcastDeletion(level, plane);
                     yield false; // 已经单独广播
@@ -1396,7 +1468,13 @@ public final class ServerNetHandler {
             Plane plane = data.byId(payload.planeId());
             if (plane == null) return;
             if (!plane.dimension.equals(level.dimension().location())) return;
-            if (!PlanePermissions.canEditContent(plane, player)) {
+            // 【hotfix-98】播放控制（启停 / 跳进度）**不算「改内容」**，任何玩家都能按：
+            // 内容保护是防涂鸦的，不是防「暂停一下」的；以前它连自己的视频都暂停不了
+            //（被服务端静默拒绝 ⇒ 表现就是「暂停/启动按钮有时不好使」）。
+            boolean playbackAction = "toggle".equals(payload.action())
+                    || "seek".equals(payload.action())
+                    || "stop".equals(payload.action());
+            if (!playbackAction && !PlanePermissions.canEditContent(plane, player)) {
                 player.displayClientMessage(Component.translatable("projector.msg.content_protected"), true);
                 // 【rc-78】同 onPlaneEdit：拒绝之后必须让发起者回滚
                 resyncTo(player, level, plane);
@@ -1404,6 +1482,50 @@ public final class ServerNetHandler {
             }
             Widget w = plane.widgetById(payload.widgetId());
             long now = level.getGameTime();
+
+            // 【hotfix-98】视频控件：世界里点左下角的小播放键 → 服务端翻转状态并广播。
+            // 位置锚点写在控件数据里（startTimeMs / pausedFrame），所以所有客户端
+            // 看到的是同一个进度，晚进来的玩家也能对上。
+            if (w instanceof top.hmjmfabc.projector.common.widget.VideoWidget video) {
+                CompoundTag vargs = payload.args() == null ? new CompoundTag() : payload.args();
+                long wall = System.currentTimeMillis();
+                switch (payload.action()) {
+                    case "toggle" -> {
+                        boolean next = vargs.contains("value")
+                                ? vargs.getBoolean("value") : !video.paused;
+                        video.setPausedAt(next, wall);
+                        Projector.LOGGER.info(
+                                "[Projector][视频] {} 按了播放键：{}（平面={} 控件={}）",
+                                player.getGameProfile().getName(), next ? "暂停" : "播放",
+                                plane.id.toString().substring(0, 8),
+                                video.id.toString().substring(0, 8));
+                    }
+                    case "seek" -> {
+                        // 【hotfix-101】优先按**毫秒**跳：客户端知道真实时长（外部解码器那边读到的），
+                        // 服务端手里的 frameCount 对这类视频是 1，用比例算必然跳错。
+                        if (vargs.contains("durationMs") && vargs.getLong("durationMs") > 0) {
+                            video.mediaDurationMs = vargs.getLong("durationMs");
+                        }
+                        if (vargs.contains("ms")) {
+                            video.seekToMs(Math.max(0L, vargs.getLong("ms")), wall);
+                        } else {
+                            double fraction = Sanitize.clamp(vargs.getDouble("fraction"), 0, 1, 0);
+                            video.seekToFraction(fraction, wall);
+                        }
+                        Projector.LOGGER.info(
+                                "[Projector][视频] {} 调进度到 {}ms / {}ms（平面={} 控件={}）",
+                                player.getGameProfile().getName(), video.positionMs(wall),
+                                video.durationMs(), plane.id.toString().substring(0, 8),
+                                video.id.toString().substring(0, 8));
+                    }
+                    default -> {
+                        return;
+                    }
+                }
+                data.markDirty();
+                broadcastPlane(level, plane);
+                return;
+            }
 
             // 【⑧】计时器：自己的动作集
             if (w instanceof top.hmjmfabc.projector.common.widget.TimerWidget timer) {
@@ -1589,10 +1711,143 @@ public final class ServerNetHandler {
     // 玩家登录时同步
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // 【hotfix-101】按距离订阅：进圈才发、出圈就撤
+    //
+    // 用户实测指出「所有平面同步给客户端」是白烧流量。现在服务端记住
+    // 「每个客户端手里有哪些平面」（KNOWN），登录/切维度时只发范围内的，
+    // 之后每秒扫一次：新进圈的补发、走出去的发一条「移除」。
+    // 客户端的移除语义早就有了（{plane: UUID}，删除平面用的就是它），所以协议不用改。
+    // ------------------------------------------------------------------
+
+    /** 玩家 UUID → 他客户端手里已有的平面 id。 */
+    private static final Map<UUID, Set<UUID>> KNOWN = new ConcurrentHashMap<>();
+
+    /** 上一次判定时玩家所在的维度（切维度要整体重算）。 */
+    private static final Map<UUID, ResourceLocation> KNOWN_DIM = new ConcurrentHashMap<>();
+
+    /** 同步距离（方块）；0 = 不限（退回旧行为）。 */
+    private static double syncDistance() {
+        try {
+            return ProjectorConfig.INSTANCE.planeSyncDistance.get();
+        } catch (Throwable t) {
+            return 512.0;
+        }
+    }
+
+    /** 这个玩家此刻应该在「范围内」的平面集合。 */
+    private static Set<UUID> inRangeNow(ServerLevel level, ServerPlayer player) {
+        Set<UUID> out = new HashSet<>();
+        double range = syncDistance();
+        List<Plane> planes = ProjectorData.get(level).planesIn(level.dimension().location());
+        double px = player.getX(), py = player.getY(), pz = player.getZ();
+        for (Plane plane : planes) {
+            if (PlaneDistance.withinRange(plane, px, py, pz, range)) {
+                out.add(plane.id);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 每秒扫一次：把「新进圈」的平面补发给各玩家，「走出去」的发一条移除。
+     *
+     * <p>只在集合真的变化时才发包 —— 玩家站着不动时一秒零流量。</p>
+     */
+    public static void tickSubscriptions(net.minecraft.server.MinecraftServer server) {
+        double range = syncDistance();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            try {
+                ServerLevel level = player.serverLevel();
+                ResourceLocation dim = level.dimension().location();
+                ResourceLocation was = KNOWN_DIM.put(player.getUUID(), dim);
+                Set<UUID> known = KNOWN.computeIfAbsent(player.getUUID(), k -> ConcurrentHashMap.newKeySet());
+                if (was != null && !was.equals(dim)) {
+                    // 切维度：客户端那边上一个维度的平面已经不渲染了，这里整体清零重算
+                    known.clear();
+                }
+                Set<UUID> want = inRangeNow(level, player);
+
+                // ① 出圈：发移除（省下后续所有编辑广播）
+                List<UUID> gone = new ArrayList<>();
+                for (UUID id : known) {
+                    if (!want.contains(id)) {
+                        gone.add(id);
+                    }
+                }
+                for (UUID id : gone) {
+                    known.remove(id);
+                    CompoundTag tag = new CompoundTag();
+                    tag.putUUID("plane", id);
+                    PacketDistributor.sendToPlayer(player,
+                            new Payloads.SyncPlanes(dim, tag));
+                }
+
+                // ② 进圈：补发（分批，避免单包超 1 MiB）
+                List<Plane> add = new ArrayList<>();
+                if (!want.isEmpty()) {
+                    for (Plane plane : ProjectorData.get(level).planesIn(dim)) {
+                        if (want.contains(plane.id) && !known.contains(plane.id)) {
+                            add.add(plane);
+                        }
+                    }
+                }
+                if (!add.isEmpty()) {
+                    ListTag list = new ListTag();
+                    int bytes = 0;
+                    for (Plane plane : add) {
+                        CompoundTag saved;
+                        try {
+                            saved = plane.save();
+                        } catch (Throwable t) {
+                            continue;
+                        }
+                        int size = saved.toString().length();
+                        if (!list.isEmpty() && (list.size() >= SYNC_PLANES_PER_PACKET
+                                || bytes + size > SYNC_BYTES_BUDGET)) {
+                            sendPlaneBatch(player, level, list, false);
+                            list = new ListTag();
+                            bytes = 0;
+                        }
+                        list.add(saved);
+                        bytes += size;
+                        known.add(plane.id);
+                    }
+                    if (!list.isEmpty()) {
+                        sendPlaneBatch(player, level, list, false);
+                    }
+                    Projector.LOGGER.info("[Projector][服务端][同步] 玩家 {} 进入范围，补发 {} 个平面"
+                                    + "（范围 {} 格，现有 {} 个）",
+                            player.getGameProfile().getName(), add.size(),
+                            range <= 0 ? "不限" : String.valueOf((int) range), known.size());
+                }
+            } catch (Throwable t) {
+                Projector.LOGGER.warn("[Projector][服务端][同步] 订阅扫描异常：{}", t.toString());
+            }
+        }
+    }
+
+    /** 玩家登出时清掉订阅表。 */
+    public static void forgetSubscriptions(UUID player) {
+        KNOWN.remove(player);
+        KNOWN_DIM.remove(player);
+    }
+
     public static void syncAllTo(ServerPlayer player) {
         ServerLevel level = player.serverLevel();
         ProjectorData data = ProjectorData.get(level);
-        List<Plane> planes = data.planesIn(level.dimension().location());
+        // 【hotfix-101】只发范围内的平面，并记进订阅表（后续的编辑广播只发给这些玩家）
+        Set<UUID> known = KNOWN.computeIfAbsent(player.getUUID(), k -> ConcurrentHashMap.newKeySet());
+        known.clear();
+        KNOWN_DIM.put(player.getUUID(), level.dimension().location());
+        double range = syncDistance();
+        List<Plane> planes = new ArrayList<>();
+        for (Plane plane : data.planesIn(level.dimension().location())) {
+            if (PlaneDistance.withinRange(plane, player.getX(), player.getY(), player.getZ(), range)) {
+                planes.add(plane);
+                known.add(plane.id);
+            }
+        }
         if (planes.isEmpty()) {
             CompoundTag empty = new CompoundTag();
             empty.put("planes", new ListTag());

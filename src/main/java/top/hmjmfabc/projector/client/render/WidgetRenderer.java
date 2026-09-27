@@ -203,6 +203,16 @@ public final class WidgetRenderer {
 
     private static void drawVideo(QuadCollector collector, PlaneRenderContext ctx, VideoWidget w) {
         if (degenerate(w)) return;
+        // 【hotfix-98】画面（含各种占位）照旧，之后统一叠加「世界内小播放键 + 进度条」。
+        // 浮层单独一层，与画面内容互不干扰，也不影响下面这些提前 return。
+        drawVideoBase(collector, ctx, w);
+        if (top.hmjmfabc.projector.client.media.VideoControls.visible(w)) {
+            VideoOverlayRenderer.draw(collector, ctx, w);
+        }
+    }
+
+    /** 视频画面本身（占位 / WaterMedia / 内置三条路）。 */
+    private static void drawVideoBase(QuadCollector collector, PlaneRenderContext ctx, VideoWidget w) {
         if (w.mediaId == null || w.mediaId.isEmpty()) {
             placeholder(collector, ctx, w, 0x663377CC);
             return;

@@ -149,6 +149,60 @@ public final class ClientInputHandler {
                 top.hmjmfabc.projector.client.media.LocalMedia.fontDir().toString()), false);
     }
 
+    /**
+     * 【hotfix-98】视频控件的世界内小控件：点左下角叫出播放键，点播放键启停，
+     * 点进度条跳进度；5 秒无操作自动隐藏（见 {@code client.media.VideoControls}）。
+     *
+     * <p>几何一律取自 {@code VideoWidget}（与渲染同源），并且<b>不需要先按 U 选中平面</b>
+     * —— 与音乐控件的世界内播放键保持一致。</p>
+     *
+     * @return true 表示这次点击已经被吃掉（调用方直接 return）
+     */
+    private static boolean handleVideoControl(Minecraft mc,
+                                              InputEvent.InteractionKeyMappingTriggered event) {
+        WidgetPick pick = pickWidget(mc, null);
+        if (pick == null
+                || !(pick.widget() instanceof top.hmjmfabc.projector.common.widget.VideoWidget video)) {
+            return false;
+        }
+        Plane plane = pick.plane();
+        Vec3 eye = mc.player.getEyePosition(1.0f);
+        Vec3 dir = mc.player.getViewVector(1.0f);
+        Double t = intersectPlane(plane, eye, dir, ProjectorConfig.INSTANCE.selectDistance.get());
+        if (t == null) {
+            return false;
+        }
+        Vec3 hit = eye.add(dir.scale(t));
+        double cx = plane.canvasX(hit);
+        double cy = plane.canvasY(hit);
+        long now = System.currentTimeMillis();
+        boolean visible = top.hmjmfabc.projector.client.media.VideoControls.visible(video.id, now);
+
+        if (visible && video.hitControl(cx, cy)) {
+            top.hmjmfabc.projector.client.media.VideoControls.toggleInWorld(plane, video);
+            event.setCanceled(true);
+            event.setSwingHand(false);
+            return true;
+        }
+        if (visible) {
+            double fraction = video.seekFractionAt(cx, cy);
+            if (fraction >= 0) {
+                top.hmjmfabc.projector.client.media.VideoControls.seekInWorld(plane, video, fraction);
+                event.setCanceled(true);
+                event.setSwingHand(false);
+                return true;
+            }
+        }
+        if (video.hitHotZone(cx, cy)) {
+            // 只叫出控件，不做别的：避免「想调出来却误触暂停」
+            top.hmjmfabc.projector.client.media.VideoControls.reveal(video.id, now);
+            event.setCanceled(true);
+            event.setSwingHand(false);
+            return true;
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
     // 右键：编辑控件
     // ------------------------------------------------------------------
@@ -159,9 +213,16 @@ public final class ClientInputHandler {
 
     @SubscribeEvent
     public void onInteraction(InputEvent.InteractionKeyMappingTriggered event) {
-        if (!event.isUseItem()) return;
+        // 【hotfix-98】以前只认「使用物品」（右键）。Android 触屏上「点一下」多数映射成
+        // 攻击键（左键），所以视频控件的小播放键在手机上根本点不到。现在左右键都收，
+        // 但只对「视频控件的左下角那一块」生效，其余情况照旧放行给原版。
+        if (!event.isUseItem() && !event.isAttack()) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null || mc.screen != null) return;
+        if (handleVideoControl(mc, event)) {
+            return;
+        }
+        if (!event.isUseItem()) return;
         // 【用户要求 ⑥.2】未选中任何平面时，右键**不能**打开控件编辑页面。
         // 以前这里是无条件拾取（先看选中平面、再看本维度其它平面），于是玩家
         // 随手对着墙右键就会弹出编辑器，非常碍事。

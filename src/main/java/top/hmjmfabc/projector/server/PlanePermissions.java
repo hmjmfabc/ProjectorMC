@@ -21,6 +21,13 @@ public final class PlanePermissions {
     /** 管理员判定的权限等级门槛。 */
     public static final int ADMIN_LEVEL = 2;
 
+    /**
+     * 【hotfix-98】「删除保护」所需的最低权限等级。
+     *
+     * <p>只有这个等级的 OP 能开关它，也只有这个等级的人能删掉受保护的平面。</p>
+     */
+    public static final int DELETE_PROTECT_LEVEL = 4;
+
     private PlanePermissions() {
     }
 
@@ -137,9 +144,36 @@ public final class PlanePermissions {
         return canManage(plane, player);
     }
 
-    /** 能否删除平面。只有管理员或创建者可以。 */
+    /**
+     * 能否删除平面。
+     *
+     * <p>【hotfix-98 用户要求】<b>默认放开：任何人都能删除任何平面</b>
+     * （以前只有管理员与创建者可以，玩家报「删不掉别人乱画的平面」）。
+     * 唯一例外是这个平面开了<b>删除保护</b>（{@link Plane#deleteProtect}）——
+     * 那时只有权限等级 ≥ {@link #DELETE_PROTECT_LEVEL} 的 OP 能删。</p>
+     *
+     * <p>注意：这与<b>内容保护</b>是两件事 —— 内容保护管「能不能改上面的控件」，
+     * 删除保护只管「能不能把这个平面整个删掉」，互不影响。</p>
+     */
     public static boolean canDelete(Plane plane, ServerPlayer player) {
-        return canManage(plane, player);
+        if (player == null) return false;
+        if (plane == null || !plane.deleteProtect) return true;
+        return opLevel(player) >= DELETE_PROTECT_LEVEL;
+    }
+
+    /**
+     * 能否开关「删除保护」。<b>只认权限等级（4 级 OP）</b>，不看是不是创建者
+     * —— 这个开关的用途就是挡住包括创建者在内的所有人乱删。
+     */
+    public static boolean canToggleDeleteProtection(ServerPlayer player) {
+        if (player == null) return false;
+        if (!player.server.isDedicatedServer()) return true;   // 单人/联机房主
+        return opLevel(player) >= DELETE_PROTECT_LEVEL;
+    }
+
+    /** 玩家在独立服务器上的权限等级（读不到时按 hasPermissions 逐级退）。 */
+    public static int opLevel(ServerPlayer player) {
+        return levelOf(player);
     }
 
     /**

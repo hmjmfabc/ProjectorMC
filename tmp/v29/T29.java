@@ -1,6 +1,7 @@
 package top.hmjmfabc.projector.client.media.wm;
 
 import net.minecraft.nbt.CompoundTag;
+import top.hmjmfabc.projector.client.media.VideoControls;
 import top.hmjmfabc.projector.client.media.VideoProbe;
 import top.hmjmfabc.projector.common.widget.VideoWidget;
 
@@ -34,6 +35,9 @@ public class T29 {
         dualDialect();
         headerProbe();
         blurredBoundary();
+        playbackControls();
+        renderingFixes();
+        syncByDistance();
 
         System.out.println();
         for (String f : failed) {
@@ -110,11 +114,13 @@ public class T29 {
         long looped = WaterMediaVideos.desiredPositionMs(w, 1000L);
         check("循环时位置绕回 [0,总长)", looped >= 0 && looped < 1000L);
 
-        // 暂停：位置取 pausedFrame 换算
+        // 暂停：位置取 pausedMs（hotfix-101 起以毫秒为唯一来源 ——
+        // 外部解码器的视频没有帧号，用帧号记位置会退化成 0 = 续播从头开始）
         w.paused = true;
+        w.pausedMs = 5_000L;
         w.pausedFrame = 50;
         long paused = WaterMediaVideos.desiredPositionMs(w, 60_000L);
-        check("暂停时位置 = 暂停帧 / fps", Math.abs(paused - 5000L) < 1L);
+        check("暂停时位置 = pausedMs", Math.abs(paused - 5000L) < 1L);
         check("暂停位置不会随时间走", WaterMediaVideos.desiredPositionMs(w, 60_000L) == paused);
 
         w.paused = false;
@@ -345,6 +351,299 @@ public class T29 {
         String videos = readFile("src/main/java/top/hmjmfabc/projector/client/media/wm/WaterMediaVideos.java");
         check("本地缺文件不算「打不开」（否则下载还没开始就被禁用）",
                 videos.contains("else if (hadFile)") && videos.contains("MediaCache.prefetch(hash, true)"));
+    }
+
+    // ------------------------------------------------------------------ 视频播放控制（hotfix-98）
+
+    /**
+     * 「暂停/启动按钮有时不好使」的根因回归。
+     *
+     * <p>以前没有任何地方记录「暂停时停在哪一帧」（{@code pausedFrame} 恒为 0），
+     * 点暂停画面直接跳回第一帧，点继续又从全局时间接着算——按钮看着就是没反应/乱跳。
+     * 现在暂停会冻结当前帧、继续会把时间锚点挪到等于那一帧的位置。</p>
+     */
+    private static void playbackControls() {
+        // 100 帧 @10fps = 10 秒
+        VideoWidget w = new VideoWidget();
+        w.w = 64;
+        w.h = 48;
+        w.frameCount = 100;
+        w.fps = 10;
+        w.loop = true;
+        long t0 = 1_700_000_000_000L;
+
+        check("时长 = 帧数 / 帧率（100 帧 10fps = 10 秒）", w.durationMs() == 10_000L);
+
+        // 播到第 3 秒（锚点在 t0 - 3000）
+        w.startTimeMs = t0 - 3_000L;
+        check("播放位置按时长锚点算（≈3 秒）", Math.abs(w.positionMs(t0) - 3_000L) <= 100L);
+        check("进度比例 ≈0.3", Math.abs(w.progressFraction(t0) - 0.3) < 0.02);
+
+        // 暂停：必须冻结在**当前这一帧**，而不是第 0 帧
+        w.setPausedAt(true, t0);
+        check("暂停后冻结在当前帧（不是跳回第 0 帧）", w.paused && w.pausedFrame == 30);
+        check("暂停后位置保持不变（≈3 秒）", Math.abs(w.positionMs(t0 + 5_000L) - 3_000L) <= 100L);
+
+        // 继续：从暂停处接着放（不能按全局时间跳到 8 秒）
+        long t1 = t0 + 5_000L;
+        w.setPausedAt(false, t1);
+        check("继续后从暂停处接着放（不是跳到全局时间）",
+                !w.paused && Math.abs(w.positionMs(t1) - 3_000L) <= 100L);
+        check("继续后过 1 秒 ≈ 4 秒", Math.abs(w.positionMs(t1 + 1_000L) - 4_000L) <= 120L);
+
+        // 跳进度：播放中与暂停中都要生效
+        w.seekToFraction(0.5, t1);
+        check("播放中跳进度 50% ≈ 5 秒", Math.abs(w.positionMs(t1) - 5_000L) <= 120L);
+        w.setPausedAt(true, t1);
+        w.seekToFraction(0.8, t1);
+        check("暂停中跳进度 80% ≈ 8 秒（暂停帧跟着变）",
+                Math.abs(w.positionMs(t1) - 8_000L) <= 120L);
+        check("跳进度被夹在 0~1", clampSeek(w, -5.0) == 0L && clampSeek(w, 9.9) <= w.durationMs());
+
+        // 不循环 + 已放到结尾：再点继续应从头上重放（播放器常规手感）
+        VideoWidget e = new VideoWidget();
+        e.w = 64;
+        e.h = 48;
+        e.frameCount = 100;
+        e.fps = 10;
+        e.loop = false;
+        e.startTimeMs = t0 - 20_000L;
+        e.setPausedAt(true, t0);
+        e.setPausedAt(false, t0);
+        check("不循环放到结尾后继续 = 从头重放", e.positionMs(t0) <= 200L);
+
+        // ---- 世界内小播放键的几何（与点击判定同源）----
+        check("播放键在左下角（x/y 都从内边距开始）",
+                w.controlBox()[0] == w.controlPadding() && w.controlBox()[1] == w.controlPadding());
+        double[] hot = w.controlHotZone();
+        double[] box = w.controlBox();
+        check("热区包住播放键", hot[0] <= box[0] && hot[1] <= box[1]
+                && hot[2] >= box[2] && hot[3] >= box[3]);
+        check("热区不会超出控件", hot[2] <= w.w + 0.001 && hot[3] <= w.h + 0.001);
+        double[] bar = w.progressBox();
+        check("进度条在播放键右侧、控件之内",
+                bar[0] > box[2] - 0.001 && bar[2] <= w.w + 0.001 && bar[1] < bar[3]);
+        check("点在播放键上判为播放键（含旋转后的坐标换算）",
+                w.hitControl(w.x + box[0] + 0.5, w.y + box[1] + 0.5));
+        check("点在控件右上角不算播放键也不在热区",
+                !w.hitControl(w.x + w.w - 0.5, w.y + w.h - 0.5)
+                        && !w.hitHotZone(w.x + w.w - 0.5, w.y + w.h - 0.5));
+        double frac = w.seekFractionAt(w.x + (bar[0] + bar[2]) / 2.0, w.y + (bar[1] + bar[3]) / 2.0);
+        check("点在进度条中点 = 50%", Math.abs(frac - 0.5) < 0.03);
+        check("点在进度条之外返回 -1",
+                w.seekFractionAt(w.x + w.w - 0.2, w.y + w.h - 0.2) < 0);
+
+        // ---- 【hotfix-101】外部解码器的视频：时长未知时进度条不许乱跳 ----
+        VideoWidget ext = new VideoWidget();
+        ext.w = 64;
+        ext.h = 48;
+        ext.frameCount = 1;            // 外部视频没有帧表 ⇒ frameCount=1
+        ext.fps = 10;
+        ext.loop = true;
+        ext.startTimeMs = t0 - 3_000L;
+        check("时长未知（frameCount=1 且没读到真时长）时 durationKnown()=false",
+                !ext.durationKnown());
+        ext.mediaDurationMs = 600_000L;      // 解码器报出 10 分钟
+        check("读到真实时长后 durationKnown()=true",
+                ext.durationKnown() && ext.durationMs() == 600_000L);
+        check("位置按真实时长算（不再每 100ms 绕一圈）",
+                Math.abs(ext.progressFraction(t0) - 3_000.0 / 600_000.0) < 0.005);
+        // 按毫秒跳（服务端不需要知道时长）
+        ext.seekToMs(120_000L, t0);
+        check("按毫秒跳转生效", Math.abs(ext.positionMs(t0) - 120_000L) <= 120L);
+        ext.setPausedAt(true, t0);
+        check("暂停冻结在毫秒位置（外部解码器没有帧号也能续播）",
+                ext.paused && Math.abs(ext.pausedMs - 120_000L) <= 120L);
+        ext.setPausedAt(false, t0 + 1_000L);
+        check("继续播放从暂停处接着（不是从头）",
+                Math.abs(ext.positionMs(t0 + 1_000L) - 120_000L) <= 200L);
+
+        VideoWidget legacy = new VideoWidget();
+        legacy.w = 64;
+        legacy.h = 48;
+        legacy.frameCount = 100;
+        legacy.fps = 10;
+        net.minecraft.nbt.CompoundTag old = new net.minecraft.nbt.CompoundTag();
+        old.putInt("frames", 100);
+        old.putDouble("fps", 10);
+        old.putBoolean("paused", true);
+        old.putInt("pausedFrame", 50);          // 旧存档只有帧号
+        legacy.loadExtra(old);
+        check("旧存档（只有 pausedFrame）自动换算成 pausedMs=5000",
+                Math.abs(legacy.pausedMs - 5_000L) < 1L);
+
+        // ---- 浮层 5 秒无操作隐藏 ----
+        java.util.UUID id = java.util.UUID.randomUUID();
+        long now = 1_700_000_000_000L;
+        check("自动隐藏时长 = 5 秒", VideoControls.HIDE_MS == 5000L);
+        check("没点过 = 不显示", !VideoControls.visible(id, now));
+        VideoControls.reveal(id, now);
+        check("点一下之后显示", VideoControls.visible(id, now));
+        check("4.9 秒还在", VideoControls.visible(id, now + 4_900L));
+        check("5 秒后自动隐藏", !VideoControls.visible(id, now + 5_000L));
+        VideoControls.reveal(id, now);
+        VideoControls.reveal(id, now + 4_000L);
+        check("期间再点一次会续期", VideoControls.visible(id, now + 8_500L));
+        VideoControls.hide(id);
+        check("主动隐藏立刻生效", !VideoControls.visible(id, now));
+        VideoControls.clear();
+    }
+
+    private static long clampSeek(VideoWidget w, double f) {
+        w.seekToFraction(f, 1_700_000_000_000L);
+        return w.positionMs(1_700_000_000_000L);
+    }
+
+    // ------------------------------------------------------------------ 渲染修复（hotfix-98）
+
+    /**
+     * 「水下什么都渲染不出来」「平面反面什么都看不到」两条根因的源码级回归。
+     *
+     * <p>MC 源码实证：{@code RenderType.text} 用的是默认 {@code CULL}（背面剔除），
+     * 且 {@code rendertype_text} 的顶点着色器算 {@code fog_distance}、片元做线性雾混合
+     * —— 所以水下浓雾会把整块屏幕染成水色，从反面看则一个四边形都提交不上去。</p>
+     */
+    private static void renderingFixes() {
+        String collector = readFile("src/main/java/top/hmjmfabc/projector/client/render/QuadCollector.java");
+        String world = readFile("src/main/java/top/hmjmfabc/projector/client/render/WorldPlaneRenderer.java");
+        String client = readFile("src/main/java/top/hmjmfabc/projector/client/ProjectorClient.java");
+        String input = readFile("src/main/java/top/hmjmfabc/projector/client/ClientInputHandler.java");
+        String server = readFile("src/main/java/top/hmjmfabc/projector/network/ServerNetHandler.java");
+        String editor = readFile("src/main/java/top/hmjmfabc/projector/client/gui/WidgetEditorScreen.java");
+        String renderer = readFile("src/main/java/top/hmjmfabc/projector/client/render/WidgetRenderer.java");
+
+        check("**不再处理反面**（背面朝外的四边形被 CULL 剔除 = 彻底不透视）",
+                !collector.contains("backfaceView") && !collector.contains("seeThrough")
+                        && !world.contains("backside") && !world.contains("BACKFACE_SEE_THROUGH"));
+        check("渲染阶段在半透明块之前（水面/玻璃不再挡掉水下内容）",
+                client.contains("AFTER_ENTITIES")
+                        && !client.contains("Stage.AFTER_TRANSLUCENT_BLOCKS"));
+        check("渲染时把雾推到极远（水下不再整片染成水色）",
+                client.contains("setShaderFogStart(1.0e6f)") && client.contains("getShaderFogStart()"));
+        check("雾设置用完必须还原", client.contains("finally"));
+        check("世界里左键/右键都能点视频控件（触屏才点得到）",
+                input.contains("event.isAttack()") && input.contains("handleVideoControl"));
+        check("视频浮层由渲染器画出", renderer.contains("VideoOverlayRenderer.draw"));
+        String overlay = readFile("src/main/java/top/hmjmfabc/projector/client/render/VideoOverlayRenderer.java");
+        check("播放键**直接调用音乐的绘制函数**（逐像素一样，不再是自画的一套）",
+                overlay.contains("MusicWidgetRenderer.ring(")
+                        && overlay.contains("MusicWidgetRenderer.roundedRect(")
+                        && overlay.contains("MusicWidgetRenderer.roundPolygon(")
+                        && overlay.contains("radius * 0.09"));
+        check("时长未知时不画已播放段（否则进度条乱跳）",
+                overlay.contains("durationKnown()"));
+        check("播放控制不做内容校验（内容保护只防改内容）",
+                server.contains("playbackAction") && server.contains("!playbackAction"));
+        check("视频 toggle/seek 由服务端权威处理并广播",
+                server.contains("video.setPausedAt") && server.contains("video.seekToFraction")
+                        && server.contains("broadcastPlane(level, plane)"));
+        check("编辑器暂停按钮走单一入口 setPausedAt",
+                editor.contains("vw.setPausedAt(") && !editor.contains("vw.paused = !vw.paused"));
+        int videoBranch = editor.indexOf("instanceof VideoWidget");
+        int playBtnAt = editor.indexOf("Button playBtn");
+        check("编辑器把播放/循环放在最上面一行（不再被 bottomLimit 吃掉）",
+                videoBranch > 0 && playBtnAt > videoBranch
+                        && playBtnAt < editor.indexOf("sliderRow", videoBranch));
+
+        // ---- 删除权限：默认人人可删，开了删除保护才要求 4 级 ----
+        String perms = readFile("src/main/java/top/hmjmfabc/projector/server/PlanePermissions.java");
+        String dialog = readFile("src/main/java/top/hmjmfabc/projector/client/gui/PlaneDialogScreen.java");
+        String plane = readFile("src/main/java/top/hmjmfabc/projector/common/Plane.java");
+        check("默认人人可删（只有开了删除保护才看等级）",
+                perms.contains("!plane.deleteProtect") && perms.contains("DELETE_PROTECT_LEVEL = 4"));
+        check("开关删除保护只认等级 4", perms.contains("canToggleDeleteProtection"));
+        check("服务端有 protectDelete 操作", server.contains("case \"protectDelete\""));
+        check("拒绝删除时给玩家明确提示（不许静默）",
+                server.contains("projector.msg.delete_protected"));
+        check("对话框有删除保护按钮", dialog.contains("deleteProtectButton") && dialog.contains("canDeleteNow()"));
+        check("删除按钮不再要求「管理员或创建者」", !dialog.contains("deleteButton.active = allowed;"));
+        check("删除保护字段进了 NBT", plane.contains("deleteProtect"));
+
+        // 真跑一遍 NBT 往返：老存档没有这个键时必须默认「关」（否则旧平面会突然删不掉）
+        try {
+            top.hmjmfabc.projector.common.Plane p = new top.hmjmfabc.projector.common.Plane();
+            p.id = java.util.UUID.randomUUID();       // save() 要写 id，测试里补上
+            p.dimension = net.minecraft.resources.ResourceLocation.parse("minecraft:overworld");
+            p.face = net.minecraft.core.Direction.NORTH;
+            p.anchor = new net.minecraft.core.BlockPos(0, 64, 0);
+            check("新平面默认没有删除保护", !p.deleteProtect);
+            p.deleteProtect = true;
+            top.hmjmfabc.projector.common.Plane back =
+                    top.hmjmfabc.projector.common.Plane.load(p.save());
+            check("删除保护能存进 NBT 再读回来", back.deleteProtect);
+            net.minecraft.nbt.CompoundTag tag = p.save();
+            tag.remove("deleteProtect");
+            check("老存档缺这个键 = 默认关闭（人人可删）",
+                    !top.hmjmfabc.projector.common.Plane.load(tag).deleteProtect);
+        } catch (Throwable t) {
+            failed.add("删除保护 NBT 往返异常：" + t);
+        }
+    }
+
+    // ------------------------------------------------------------------ 按距离同步（hotfix-101）
+
+    /**
+     * 服务端「按距离订阅」的判据。
+     *
+     * <p>用户实测指出登录时把**所有**平面推给客户端是白烧流量。判据是
+     * **点到包围盒的最近距离**（不是到锚点的距离）—— 用纯数字钉住符号与边界，
+     * 因为「差一格」这种错误肉眼看不出来。</p>
+     */
+    private static void syncByDistance() {
+        // 一堵 10x1x10 的墙（x∈[0,10], y∈[64,65], z∈[0,10]）
+        double minX = 0, minY = 64, minZ = 0, maxX = 10, maxY = 65, maxZ = 10;
+
+        check("点在盒内 = 距离 0",
+                top.hmjmfabc.projector.common.PlaneDistance.distanceToBox(
+                        5, 64.5, 5, minX, minY, minZ, maxX, maxY, maxZ) == 0.0);
+        check("正前方 3 格 = 距离 3",
+                Math.abs(top.hmjmfabc.projector.common.PlaneDistance.distanceToBox(
+                        5, 64.5, 13, minX, minY, minZ, maxX, maxY, maxZ) - 3.0) < 1e-9);
+        // 盒子 y 上界是 65、z 上界是 10：取 y=69（高 4）、z=13（远 3）⇒ 距离正好 5
+        check("斜角是欧氏距离（3-4-5）",
+                Math.abs(top.hmjmfabc.projector.common.PlaneDistance.distanceToBox(
+                        5, 69, 13, minX, minY, minZ, maxX, maxY, maxZ) - 5.0) < 1e-9);
+        check("**贴在大平面旁边但离锚点很远时仍算在范围内**"
+                        + "（用包围盒而不是锚点，否则大平面会被误判成太远）",
+                top.hmjmfabc.projector.common.PlaneDistance.withinRange(
+                        9.5, 64.5, 9.5,
+                        new net.minecraft.world.phys.AABB(minX, minY, minZ, maxX, maxY, maxZ),
+                        512.0));
+        check("恰好等于范围 = 算在范围内（闭区间）",
+                top.hmjmfabc.projector.common.PlaneDistance.withinRange(
+                        5, 64.5, 512, new net.minecraft.world.phys.AABB(minX, minY, minZ, maxX, maxY, maxZ),
+                        502.0));
+        check("超出范围 1 格 = 剔除",
+                !top.hmjmfabc.projector.common.PlaneDistance.withinRange(
+                        5, 64.5, 513, new net.minecraft.world.phys.AABB(minX, minY, minZ, maxX, maxY, maxZ),
+                        502.0));
+        check("范围 0 = 不限（退回旧行为）",
+                top.hmjmfabc.projector.common.PlaneDistance.withinRange(
+                        0, 0, 100000, new net.minecraft.world.phys.AABB(minX, minY, minZ, maxX, maxY, maxZ),
+                        0));
+        check("空参数不崩（返回 false）",
+                !top.hmjmfabc.projector.common.PlaneDistance.withinRange(
+                        0, 0, 0, null, 512.0)
+                        && !top.hmjmfabc.projector.common.PlaneDistance.withinRange(
+                        null, 0, 0, 0, 512.0));
+
+        // ---- 源码级：服务端真的按订阅发，而不是全维度刷 ----
+        String server = readFile("src/main/java/top/hmjmfabc/projector/network/ServerNetHandler.java");
+        String events = readFile("src/main/java/top/hmjmfabc/projector/server/ServerEvents.java");
+        String config = readFile("src/main/java/top/hmjmfabc/projector/ProjectorConfig.java");
+        check("新增 syncDistance 配置项（默认 512，0 = 不限）",
+                config.contains("planeSyncDistance")
+                        && config.contains("defineInRange(\"syncDistance\", 512, 0, 8192)"));
+        check("服务端有订阅表与每秒扫描",
+                server.contains("tickSubscriptions") && server.contains("KNOWN_DIM"));
+        check("编译广播不再「发给整个维度」",
+                !server.contains("PacketDistributor.sendToPlayersInDimension"));
+        check("出圈时给客户端发移除（复用删除那套语义，协议没变）",
+                server.contains("tag.putUUID(\"plane\", id)"));
+        check("同步与剔除用的是同一份距离判据（包围盒）",
+                server.contains("PlaneDistance.withinRange"));
+        check("每秒结算挂在服务端 tick 上", events.contains("ServerNetHandler.tickSubscriptions"));
+        check("登出清订阅表", events.contains("forgetSubscriptions"));
     }
 
     private static String readFile(String path) {

@@ -89,6 +89,25 @@ public final class WaterMediaVideos {
             return null;
         }
         session.preRender();         // v2：把解码好的这一帧传到它的 GL 纹理（必须渲染线程）
+        // 【hotfix-101】把解码器自报的时长/位置喂回控件：进度条与跳进度都要用它。
+        // 外部解码器的视频没有帧表（frameCount=1），靠 fps 算出来的「时长」只有 100ms
+        // —— 那正是玩家看到的「进度条乱跳」。
+        try {
+            long dur = session.durationMs();
+            if (dur > 0 && w.mediaDurationMs != dur) {
+                w.mediaDurationMs = dur;
+                if (entry.lastLogMs == 0L || System.currentTimeMillis() - entry.lastLogMs > 3000L) {
+                    entry.lastLogMs = System.currentTimeMillis();
+                    Projector.LOGGER.info("[Projector][视频] 读到真实时长 {}ms（{}）", dur, w.mediaName);
+                }
+            }
+            long pos = session.timeMs();
+            if (pos >= 0) {
+                w.mediaPositionMs = pos;
+            }
+        } catch (Throwable ignored) {
+            // 读不到就退回时间锚点，不影响播放
+        }
         session.setLooping(w.loop);  // v2 的循环由播放器负责；v3 是空操作（按时间锚点重播）
         sync(w, session);
         return session.location();
@@ -129,8 +148,7 @@ public final class WaterMediaVideos {
     static long desiredPositionMs(VideoWidget w, long durationMs) {
         long d = Math.max(1L, durationMs);
         if (w.paused) {
-            long base = w.fps > 0.01 ? (long) (w.pausedFrame * 1000.0 / w.fps) : 0L;
-            return Math.max(0L, Math.min(d, base));
+            return Math.max(0L, Math.min(d, w.pausedMs));
         }
         long now = System.currentTimeMillis();
         long elapsed = w.startTimeMs > 0 ? Math.max(0L, now - w.startTimeMs) : now;

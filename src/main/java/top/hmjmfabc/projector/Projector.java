@@ -23,7 +23,7 @@ public class Projector {
     public static final String MODID = "projector";
 
     /** 构建标识（显示在 HUD 上，用于确认加载的是哪一版）。 */
-    public static final String BUILD_TAG = "27.1.2";
+    public static final String BUILD_TAG = "27.1.2-hotfix";
 
     /** 全模组共用的日志器。 */
     public static final Logger LOGGER = LogUtils.getLogger();

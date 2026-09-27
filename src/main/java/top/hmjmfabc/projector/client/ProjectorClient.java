@@ -156,7 +156,10 @@ public final class ProjectorClient {
     }
 
     private void onRenderLevel(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) {
+        // 【hotfix-106】改到「半透明方块之前」：水面/玻璃是**写深度**的，我们的内容
+        // 画在它们之后就会被它们的深度挡掉 —— 表现就是「站在水上看不见水下的控件」。
+        // 提前到实体之后，水就会像盖在内容上一样正常混色（水下、水下看水上也都对）。
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_ENTITIES) {
             return;
         }
         Minecraft mc = Minecraft.getInstance();
@@ -166,10 +169,23 @@ public final class ProjectorClient {
             // 图集在上一帧分配过字形，这里把改动上传到 GPU。
             FontManager.uploadDirty();
             long tRender = System.nanoTime();
-            PLANE_RENDERER.render(event.getPoseStack(), event.getCamera(),
-                    event.getPartialTick().getGameTimeDeltaPartialTick(false));
-            SELECTION_RENDERER.render(event.getPoseStack(), event.getCamera(),
-                    event.getPartialTick().getGameTimeDeltaPartialTick(false));
+            // 【hotfix-98】水下（以及洞穴/岩浆里）雾很浓：我们的四边形用的是
+            // rendertype_text，它的顶点着色器会算 fog_distance、片元里做线性雾混合，
+            // 于是整块屏幕被染成水色 ⇒ 玩家报「水下什么都渲染不出来」。
+            // 这些内容本质是「屏幕」，不该被场景雾吃掉，所以画的时候把雾推到无穷远，画完还原。
+            float fogStart = com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart();
+            float fogEnd = com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd();
+            com.mojang.blaze3d.systems.RenderSystem.setShaderFogStart(1.0e6f);
+            com.mojang.blaze3d.systems.RenderSystem.setShaderFogEnd(2.0e6f);
+            try {
+                PLANE_RENDERER.render(event.getPoseStack(), event.getCamera(),
+                        event.getPartialTick().getGameTimeDeltaPartialTick(false));
+                SELECTION_RENDERER.render(event.getPoseStack(), event.getCamera(),
+                        event.getPartialTick().getGameTimeDeltaPartialTick(false));
+            } finally {
+                com.mojang.blaze3d.systems.RenderSystem.setShaderFogStart(fogStart);
+                com.mojang.blaze3d.systems.RenderSystem.setShaderFogEnd(fogEnd);
+            }
             RENDER_NANOS += System.nanoTime() - tRender;
         } catch (Throwable t) {
             // 渲染里的任何异常都不应该让游戏崩溃；打印一次并继续
@@ -289,6 +305,7 @@ public final class ProjectorClient {
         top.hmjmfabc.projector.client.music.MusicManager.clearAll();
         // 【27.1.2】把交给 WaterMedia 的视频会话全部释放（否则换世界后解码器还挂着）
         top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.releaseAll();
+        top.hmjmfabc.projector.client.media.VideoControls.clear();
         PlaneCache.clear();
         SelectionState.clear();
         MediaCache.clearAll();

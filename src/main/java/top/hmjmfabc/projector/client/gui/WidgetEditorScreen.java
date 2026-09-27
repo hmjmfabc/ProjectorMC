@@ -2,6 +2,7 @@ package top.hmjmfabc.projector.client.gui;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.nbt.CompoundTag;
@@ -214,6 +215,23 @@ public class WidgetEditorScreen extends ProjectorScreen {
             button("\u66ff\u6362\u89c6\u9891", cx + 4, y, cw - 8, 20, b ->
                     openChild(new MediaPickerScreen(this, plane, true, vw)));
             y += 24;
+            // 【hotfix-98】播放 / 暂停 与 循环 挪到**最上面一行**：
+            // 以前它们排在分支最后，屏幕一矮就被 bottomLimit 挤到面板外（和底部按钮重叠），
+            // 表现就是「暂停/启动按钮有时不好使」。常用功能不许排在最后（本文件的老教训）。
+            Button playBtn = button(vw.paused ? "\u5df2\u6682\u505c" : "\u64ad\u653e\u4e2d",
+                    cx + 4, y, cw / 2 - 6, 18, b -> {
+                        // 单一入口：暂停记下当前帧、继续从这一帧重锚时间
+                        vw.setPausedAt(!vw.paused, System.currentTimeMillis());
+                        rebuildWidgets();
+                    });
+            playBtn.active = canEdit;
+            Button loopBtn = button(vw.loop ? "\u5faa\u73af\uff1a\u5f00" : "\u5faa\u73af\uff1a\u5173",
+                    cx + cw / 2 + 2, y, cw / 2 - 6, 18, b -> {
+                        vw.loop = !vw.loop;
+                        rebuildWidgets();
+                    });
+            loopBtn.active = canEdit;
+            y += 22;
             // 【27.1.2】不提供「播放后端」选项：能放就放，放不了自动换另一条路。
             //（控件里仍保留 backend 字段以兼容旧存档，界面不再暴露。）
             y = sliderRow(cx, y, cw, "\u5bbd\u5ea6", 1, 512, vw.w, true, v -> vw.w = Math.max(0.5, v));
@@ -221,14 +239,6 @@ public class WidgetEditorScreen extends ProjectorScreen {
             y = sliderRow(cx, y, cw, "\u65cb\u8f6c\u89d2\u5ea6", -180, 180, vw.rot, true, v -> vw.rot = v);
             y = sliderRow(cx, y, cw, "\u5e27\u7387 fps", 1, 30, vw.fps, true, v -> vw.fps = Math.max(1, v));
             y = sliderRow(cx, y, cw, "\u4e0d\u900f\u660e\u5ea6", 0.05, 1.0, vw.alpha, false, v -> vw.alpha = (float) (double) v);
-            button(vw.loop ? "\u5faa\u73af\uff1a\u5f00" : "\u5faa\u73af\uff1a\u5173", cx + 4, y, cw / 2 - 6, 18, b -> {
-                vw.loop = !vw.loop;
-                rebuildWidgets();
-            });
-            button(vw.paused ? "\u6682\u505c\u4e2d" : "\u64ad\u653e\u4e2d", cx + cw / 2 + 2, y, cw / 2 - 6, 18, b -> {
-                vw.paused = !vw.paused;
-                rebuildWidgets();
-            });
         } else if (widget instanceof ClockWidget cw2) {
             // ---- ⑦ 标题 / 样式 / 午别（最上面三个最常用的开关）----
             clockTitleBox = editBox(cx + 4, y, cw - 8, 18, cw2.title, 128, s -> cw2.title = s);

@@ -11,6 +11,8 @@ import top.hmjmfabc.projector.common.BlockFace;
 import top.hmjmfabc.projector.common.Plane;
 import top.hmjmfabc.projector.common.PlaneBlock;
 import top.hmjmfabc.projector.common.PlaneCanvas;
+import top.hmjmfabc.projector.common.PlaneDistance;
+import top.hmjmfabc.projector.common.PlaneSide;
 import top.hmjmfabc.projector.common.widget.Widget;
 
 import java.util.List;
@@ -87,9 +89,12 @@ public final class WorldPlaneRenderer {
             if (canvasReported.add(plane.id)) {
                 reportCanvasOrigin(plane);
             }
-            if (plane.widgets.isEmpty()) continue;
+            if (plane.widgets.isEmpty()) {
+                continue;
+            }
             drawPlane(pose, plane, camPos);
             drawn++;
+            // 反面状态是「按平面」的：画完立刻复位，别漏给选区渲染或下一帧
             if (QuadCollector.remainingThisFrame() <= 0) break;
         }
         lastPlanes = drawn;
@@ -101,6 +106,8 @@ public final class WorldPlaneRenderer {
         Vec3 origin = canvas.originWorld();
         double[] axisX = axis(BlockFace.right(plane.face));
         double[] axisY = axis(BlockFace.up(plane.face));
+        // 外法线：既用于 PlaneRenderContext（顶点沿它偏移），也是绕序判定的依据
+        double[] normal = axis(BlockFace.normal(plane.face));
         // 画布坐标 (0,0) 是玩家命中的那个点；为了让方块矩形不出现负坐标，
         // 它们被整体平移了 canvasOffset，因此绘制原点要沿 u/v 轴反向平移同样的量。
         final double offU = plane.canvasOffsetX / PlaneCanvas.UNITS_PER_BLOCK;
@@ -113,7 +120,12 @@ public final class WorldPlaneRenderer {
                 origin.y - axisX[1] * offU - axisY[1] * offV - cameraPos.y,
                 origin.z - axisX[2] * offU - axisY[2] * offV - cameraPos.z};
 
-        double[] normal = axis(BlockFace.normal(plane.face));
+        // 【hotfix-106】不做任何反面处理：背面朝外时四边形会被 CULL 剔除，
+        // 也就是「站到平面后面看不到内容」—— 用户要的「彻底不透视」。
+        // （104 那套「贴脸透视」虽然能看到内容，但本质是关掉深度测试 ⇒ 会透过地形看见。）
+        // 【hotfix-99】光影兼容：可选用平面锚点处的**真实光照**画控件
+        //（与旁边的方块表面同一份光照 ⇒ 不会被当成发光体）。
+        applyWidgetLight(plane);
         // 画布原点取的是锚点方块的「最小角」，而面所在的真实平面还要沿外法线再走
         // anchorSurface 格（完整方块的 UP/SOUTH/EAST 面就是 1 格）。少了这一步，
         // 三个朝向的内容会被画进方块内部而完全看不见。
@@ -128,8 +140,15 @@ public final class WorldPlaneRenderer {
         for (Widget w : plane.widgets) {
             double surface = surfaceDepthOf(plane, w);
             // 深度 = 面平面偏移 + 方块表面位移 + 基础贴面偏移 + 控件分层
-            double depth = facePlaneOffset + surface + PlaneRenderContext.SURFACE_BIAS
+            // 内容沿法线的偏移（在正面那一侧）
+            double frontDepth = surface + PlaneRenderContext.surfaceBias()
                     + w.zOff * PlaneRenderContext.LAYER_STEP;
+            // 【hotfix-101】绕方块中面镜像：把「面外 offset」翻到另一侧。
+            //   F=1（UP/EAST/SOUTH）：1-1-offset = -offset ⇒ 落在背面外侧 ✓
+            //   F=0（DOWN/WEST/NORTH）：0-1-offset = -1-offset ⇒ 同样落在背面外侧 ✓
+            // （上一版统一用 depth-1，F=0 的平面会跑到**正面**外侧 1 格 = 玩家看到的偏移）
+            // 内容始终画在**原来的位置**（正面那一侧）—— 正反面看到的是同一个点
+            double depth = facePlaneOffset + frontDepth;
             PlaneRenderContext ctx = new PlaneRenderContext(axisX, axisY, normal, originArr, depth);
             int before = collector.quadCount();
             // 【⑩】流程动画：控件的位置/缩放/透明度/沿法线抬升由时间轴决定。
@@ -198,8 +217,34 @@ public final class WorldPlaneRenderer {
         collector.flush(pose);
     }
 
+    /**
+     * 【hotfix-99】把「本平面要用的光照值」交给 QuadCollector。
+     *
+     * <p>默认（{@code render.realLightForWidgets=false}）交回 -1，表示继续用
+     * 「天空光 15 + 方块光 14」这个对光影安全的固定值；打开后取锚点方块的真实光照。</p>
+     */
+    /** 方向向量（六朝向的轴）→ double[3]。 */
     private static double[] axis(net.minecraft.core.Direction d) {
         return new double[]{d.getStepX(), d.getStepY(), d.getStepZ()};
+    }
+
+    private static void applyWidgetLight(Plane plane) {
+        ClientLevel level = Minecraft.getInstance().level;
+        try {
+            if (!ProjectorConfig.INSTANCE.realLightForWidgets.get()) {
+                top.hmjmfabc.projector.client.render.QuadCollector.setFrameLight(-1);
+                return;
+            }
+            net.minecraft.core.BlockPos anchor = plane.anchor;
+            if (anchor == null) {
+                top.hmjmfabc.projector.client.render.QuadCollector.setFrameLight(-1);
+                return;
+            }
+            top.hmjmfabc.projector.client.render.QuadCollector.setFrameLight(
+                    net.minecraft.client.renderer.LevelRenderer.getLightColor(level, anchor));
+        } catch (Throwable t) {
+            top.hmjmfabc.projector.client.render.QuadCollector.setFrameLight(-1);
+        }
     }
 
     /**

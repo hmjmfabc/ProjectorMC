@@ -14,6 +14,8 @@
   "projector.msg.incomplete_text_only": "§e不完整平面仅支持插入纯文本",
   "projector.msg.content_protected": "§c该平面的内容受保护，你无权修改",
   "projector.msg.only_admin": "§c只有管理员（权限等级 ≥ 2）可以开关平面保护",
+  "projector.msg.need_op4": "§c只有权限等级 4 的 OP 可以开关「删除保护」",
+  "projector.msg.delete_protected": "§c这个平面开了「删除保护」，只有权限等级 4 的 OP 能删除",
   "projector.msg.only_op4": "§c服务端已限制：只有权限等级 4 的 OP 可以添加图片/视频（服务端可关闭 media.onlyAdminCanUpload 放开）",
   "projector.msg.player_offline": "§c该玩家不在线",
   "projector.msg.block_protected": "§c方块受平面「%s」的保护，无法破坏",

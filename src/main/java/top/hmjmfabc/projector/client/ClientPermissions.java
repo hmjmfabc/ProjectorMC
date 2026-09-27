@@ -51,6 +51,28 @@ public final class ClientPermissions {
         return canManage(plane) || !plane.protectContent;
     }
 
+    /**
+     * 能否删除这个平面（hotfix-98）。
+     *
+     * <p>规则与服务端 {@code PlanePermissions.canDelete} 逐条对齐：
+     * <b>默认人人都能删</b>；只有这个平面开了「删除保护」时，才要求等级 4。</p>
+     */
+    public static boolean canDelete(@Nullable Plane plane) {
+        if (plane == null) return false;
+        if (!plane.deleteProtect) return true;
+        return canToggleDeleteProtection();
+    }
+
+    /**
+     * 能否开关「删除保护」。只认等级 4（单人存档 / 局域网房主不受限）。
+     */
+    public static boolean canToggleDeleteProtection() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return false;
+        if (mc.hasSingleplayerServer()) return true;
+        return mc.player.getPermissionLevel() >= 4;
+    }
+
     /** 能否向服务端添加图片/视频。单人存档不受限；服务器要求等级 4。 */
     public static boolean canAddMedia() {
         Minecraft mc = Minecraft.getInstance();

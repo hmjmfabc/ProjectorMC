@@ -14,6 +14,8 @@
   "projector.msg.incomplete_text_only": "§eIncomplete planes only support plain text",
   "projector.msg.content_protected": "§cContent of this plane is protected",
   "projector.msg.only_admin": "§cOnly admins (permission level >= 2) can toggle plane protection",
+  "projector.msg.need_op4": "§cOnly permission level 4 OPs can toggle delete protection",
+  "projector.msg.delete_protected": "§cThis plane has delete protection; only a level 4 OP can delete it",
   "projector.msg.only_op4": "§cThis server restricts image/video uploads to operators with permission level 4 (clear media.onlyAdminCanUpload to allow everyone)",
   "projector.msg.player_offline": "§cThat player is not online",
   "projector.msg.block_protected": "§cThis block is protected by plane \"%s\"",

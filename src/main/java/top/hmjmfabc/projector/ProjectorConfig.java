@@ -89,6 +89,12 @@ public final class ProjectorConfig {
     public final ModConfigSpec.IntValue glyphCachePages;
     public final ModConfigSpec.IntValue atlasPageSize;
     public final ModConfigSpec.BooleanValue avoidFullBrightLight;
+    /** 【hotfix-99】控件与方块表面的贴面偏移（光影下闪烁就调大它）。 */
+    public final ModConfigSpec.DoubleValue renderSurfaceBias;
+    /** 【hotfix-101】服务端同步距离：超出这个范围的平面不再推给客户端（0 = 不限）。 */
+    public final ModConfigSpec.IntValue planeSyncDistance;
+    /** 【hotfix-99】用平面所在位置的真实光照渲染控件（光影下更像普通表面）。 */
+    public final ModConfigSpec.BooleanValue realLightForWidgets;
 
     private ProjectorConfig(ModConfigSpec.Builder b) {
         b.comment("平面（Plane）相关限制").push("planes");
@@ -249,8 +255,14 @@ public final class ProjectorConfig {
         b.pop();
 
         b.comment("渲染相关").push("render");
-        renderDistance = b.comment("平面内容的最远渲染距离（方块）。超出距离的平面不再绘制。")
-                .defineInRange("renderDistance", 64, 8, 256);
+        // 【hotfix-100】默认 64 → 128（用户要求「渲染距离搞大一点」）：
+        // 服务端本来就把**所有**平面都同步给客户端（syncAllTo 没有距离剔除），
+        // 所以这个值纯粹是客户端的绘制范围，调大不会带来额外的网络流量。
+        // 交互（圈选/点击）用的是另一个键 selectDistance，不受它影响。
+        renderDistance = b.comment("平面内容的最远渲染距离（方块）。超出距离的平面不再绘制。\n"
+                        + "调大 = 看得更远，代价是每帧要提交更多四边形（低配设备可调小）。\n"
+                        + "不影响圈选/点击距离（那是 selectDistance）。")
+                .defineInRange("renderDistance", 128, 8, 512);
         glyphCachePages = b.comment("字体字形图集的最大页数（每页 atlasPageSize^2 x 4 字节显存；"
                         + "1024 时一页 4 MB）。页数不够时长文本会退化成方框。")
                 .defineInRange("glyphCachePages", 4, 1, 16);
@@ -267,6 +279,23 @@ public final class ProjectorConfig {
                         + "但已经不再是全亮签名，光影会按普通表面处理它。\n"
                         + "若你的光影包出现内容变暗等异常，关掉这一项即可恢复旧行为。")
                 .define("avoidFullBrightLight", true);
+        // 【hotfix-99】内容与墙面的「贴面偏移」。光影包自带深度预通道与阴影偏移，
+        // 0.006 格在它眼里可能不算分离 ⇒ 内容与墙面打架 = 闪烁。默认提到 0.02 格。
+        renderSurfaceBias = b.comment("【光影兼容 / 闪烁】控件与方块表面的贴面偏移（单位：方块）。\n"
+                        + "太小会与墙面 Z-fighting（远处与光影下尤其明显，表现为内容闪烁）；\n"
+                        + "太大会在斜着看时发现内容「浮」在墙上。默认 0.02 格（2 厘米）。")
+                .defineInRange("surfaceBias", 0.02, 0.002, 0.1);
+        // 【hotfix-99】真实光照：光影包会把「天空光 15 + 方块光 14」也当作很亮，
+        // 内容于是看着像在发光。打开这一项后，控件用**平面所在位置的真实光照**渲染。
+        planeSyncDistance = b.comment("【流量】服务端把平面同步给客户端的最远距离（方块，0 = 不限）。\n"
+                        + "以前登录时会把该维度的**所有**平面一次性推给客户端，平面多了就是白烧流量；\n"
+                        + "现在只在玩家进入这个范围时下发，走出去就把客户端那份撤掉。\n"
+                        + "建议 ≥ 客户端的 render.renderDistance（默认 128），否则走快了会看到内容「晚一步出现」。")
+                .defineInRange("syncDistance", 512, 0, 8192);
+        realLightForWidgets = b.comment("【光影兼容 / 发光】用平面所在位置的真实光照渲染控件。\n"
+                        + "打开后控件随环境明暗变化（与旁边的墙一致），不会再被光影当成发光体；\n"
+                        + "代价是**黑暗处的内容也会变暗**。想让它永远清晰可读就保持关闭（默认）。")
+                .define("realLightForWidgets", false);
         b.pop();
     }
 }

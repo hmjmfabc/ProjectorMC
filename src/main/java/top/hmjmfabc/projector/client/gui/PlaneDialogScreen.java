@@ -33,7 +33,9 @@ import java.util.UUID;
  *       （需连续两次确认），因此这两个开关失去了意义。</li>
  *   <li><b>修好「内容保护」按钮</b>：以前点击后标签文字永远停在旧值
  *       （回调里没有 {@code rebuildWidgets()}），看起来就是「点了没反应」。</li>
- *   <li><b>删除平面</b>：仅管理员与创建者可见/可用；二次确认后直接退回游戏内，
+ *   <li><b>删除平面</b>：【hotfix-98 用户要求】<b>任何人都可以删</b>（默认放开），
+ *       除非该平面开了「删除保护」（只有 4 级 OP 能开）——那时只有 4 级 OP 能删；
+ *       二次确认后直接退回游戏内，
  *       平面及其全部控件消失。</li>
  *   <li><b>房主即管理员</b>：判定统一走 {@link ClientPermissions}，
  *       与服务端 {@code PlanePermissions} 的规则逐条对齐。</li>
@@ -46,6 +48,9 @@ public class PlaneDialogScreen extends ProjectorScreen {
     private boolean admin;
     private boolean creator;
     private boolean canManage;
+    /** 【hotfix-98】「删除保护」按钮（只有等级 4 的 OP 能点）。 */
+    private Button deleteProtectButton;
+
     /** 【rc-80】受 canManage 门控、需要每帧刷新可用性的按钮。 */
     @Nullable
     private Button protectButton;
@@ -229,6 +234,27 @@ public class PlaneDialogScreen extends ProjectorScreen {
             skipped++;
         }
 
+        // ---- 删除保护（hotfix-98）----
+        // 默认关闭 ⇒ 任何人都能删平面；只有等级 4 的 OP 能开这个开关，开了之后
+        // 非 4 级 OP 删不掉（防恶意涂鸦/破坏）。与「内容保护」是两件事，互不影响。
+        if (y + 18 <= limit) {
+            deleteProtectButton = button(deleteProtectLabel(), px + 8, y, leftW - 16, 18, b -> {
+                boolean next = !plane.deleteProtect;
+                plane.deleteProtect = next;                    // 乐观：本地先生效
+                CompoundTag t = new CompoundTag();
+                t.putBoolean("value", next);
+                send("protectDelete", t);
+                top.hmjmfabc.projector.Projector.LOGGER.info(
+                        "[Projector] 删除保护：提交 {}（平面 {}，本地等级 4={}）",
+                        next ? "开启" : "关闭", plane.displayName(), canToggleDeleteProtectNow());
+                rebuildWidgets();
+            });
+            deleteProtectButton.active = canToggleDeleteProtectNow();
+            y += 24;
+        } else {
+            skipped++;
+        }
+
         // ---- 重新圈选 ----
         if (y + 18 <= limit) {
             rebuildButton = button("\u91cd\u65b0\u5708\u9009\u6b64\u5e73\u9762", px + 8, y, leftW - 16, 18,
@@ -288,7 +314,11 @@ public class PlaneDialogScreen extends ProjectorScreen {
         button("\u5173\u95ed", px + 8, closeY, leftW - 16, 20, b -> onClose());
         deleteButton = redButton("\u5220\u9664\u5e73\u9762", px + 8, deleteY, leftW - 16, 20,
                 b -> confirmDelete());
-        deleteButton.active = canManageNow();
+        deleteButton.active = canDeleteNow();
+        if (deleteProtectButton != null) {
+            deleteProtectButton.setMessage(Component.literal(deleteProtectLabel()));
+            deleteProtectButton.active = canToggleDeleteProtectNow();
+        }
 
         // ---- 右侧画布缩略图 ----
         int cx = px + leftW + 8;
@@ -395,6 +425,24 @@ public class PlaneDialogScreen extends ProjectorScreen {
         return adminNow() || creatorNow();
     }
 
+    /** 【hotfix-98】能不能开关「删除保护」：只认等级 4（单人/房主不受限）。 */
+    private boolean canToggleDeleteProtectNow() {
+        return top.hmjmfabc.projector.client.ClientPermissions.canToggleDeleteProtection();
+    }
+
+    /** 【hotfix-98】能不能删这个平面：默认能，开了删除保护才要求等级 4。 */
+    private boolean canDeleteNow() {
+        return top.hmjmfabc.projector.client.ClientPermissions.canDelete(plane);
+    }
+
+    /** 删除保护按钮的文字（含当前状态）。 */
+    private String deleteProtectLabel() {
+        String state = plane.deleteProtect
+                ? "\u5f00\uff08\u53ea\u6709 4 \u7ea7 OP \u80fd\u5220\uff09" : "\u5173\uff08\u4eba\u4eba\u53ef\u5220\uff09";
+        boolean allowed = canToggleDeleteProtectNow();
+        return "\u5220\u9664\u4fdd\u62a4\uff1a" + state + (allowed ? "" : "\uff08\u9650 4 \u7ea7 OP\uff09");
+    }
+
     /**
      * 【rc-80】每帧刷新受「能否管理」门控的按钮可用性。
      *
@@ -437,7 +485,13 @@ public class PlaneDialogScreen extends ProjectorScreen {
         if (protectButton != null) protectButton.active = allowed;
         if (rebuildButton != null) rebuildButton.active = allowed;
         if (transferButton != null) transferButton.active = allowed;
-        if (deleteButton != null) deleteButton.active = allowed;
+        // 【hotfix-98】删除与「删除保护」都不看 canManage：
+        // 删除默认人人可点；删除保护只有等级 4 能点（各自按需重算，数据晚到也能修好）。
+        if (deleteButton != null) deleteButton.active = canDeleteNow();
+        if (deleteProtectButton != null) {
+            deleteProtectButton.setMessage(Component.literal(deleteProtectLabel()));
+            deleteProtectButton.active = canToggleDeleteProtectNow();
+        }
     }
 
     private String contentLabel() {
@@ -573,7 +627,11 @@ public class PlaneDialogScreen extends ProjectorScreen {
      * </ul>
      */
     private void confirmDelete() {
-        if (!canManage) {
+        // 【hotfix-98】删除权限放开了：默认任何人都能删；只有开了「删除保护」的平面
+        // 才要求等级 4（判定与按钮可用性同源，避免「按钮能点、发出去被拒」）。
+        if (!canDeleteNow()) {
+            Minecraft.getInstance().player.displayClientMessage(
+                    Component.translatable("projector.msg.delete_protected"), true);
             return;
         }
         Minecraft mc = Minecraft.getInstance();

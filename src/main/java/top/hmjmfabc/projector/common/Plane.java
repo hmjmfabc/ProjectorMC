@@ -90,6 +90,13 @@ public final class Plane {
     public boolean protectBlocks;
     /** 内容保护：非管理员不得增删/修改控件。 */
     public boolean protectContent;
+    /**
+     * 【hotfix-98】删除保护：开启后<b>只有权限等级 4 的 OP</b> 能删除这个平面。
+     *
+     * <p>默认关闭 —— 也就是说默认<b>任何人都能删平面</b>（用户要求放开删除权限）。
+     * 只有等级 4 的 OP 能开这个开关，用来挡住恶意涂鸦/破坏。</p>
+     */
+    public boolean deleteProtect;
     /** 平面误挖掘警告：破坏方块需同时按住 Shift。 */
     public boolean miningWarning;
 
@@ -247,6 +254,7 @@ public final class Plane {
         this.creatorName = other.creatorName;
         this.protectBlocks = other.protectBlocks;
         this.protectContent = other.protectContent;
+        this.deleteProtect = other.deleteProtect;
         this.miningWarning = other.miningWarning;
         this.blocks.clear();
         this.blocks.putAll(other.blocks);
@@ -368,6 +376,7 @@ public final class Plane {
         if (creatorName != null && !creatorName.isEmpty()) t.putString("creatorName", creatorName);
         t.putBoolean("protectBlocks", protectBlocks);
         t.putBoolean("protectContent", protectContent);
+        t.putBoolean("deleteProtect", deleteProtect);
         t.putBoolean("miningWarning", miningWarning);
 
         ListTag bs = new ListTag();
@@ -435,6 +444,7 @@ public final class Plane {
         p.creatorName = t.getString("creatorName");
         p.protectBlocks = t.getBoolean("protectBlocks");
         p.protectContent = t.getBoolean("protectContent");
+        p.deleteProtect = t.getBoolean("deleteProtect");
         p.miningWarning = t.getBoolean("miningWarning");
 
         ListTag bs = t.getList("blocks", Tag.TAG_COMPOUND);

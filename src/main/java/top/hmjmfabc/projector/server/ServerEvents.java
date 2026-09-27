@@ -118,6 +118,7 @@ public final class ServerEvents {
     public void onLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer sp) {
             ServerNetHandler.clearSessions(sp.getUUID());
+            ServerNetHandler.forgetSubscriptions(sp.getUUID());   // 【hotfix-101】清掉订阅表
             OutboundMeter.forget(sp.getUUID());
             // 【②】把这个人还没结算的下发明细落成一行「合计」，否则日志里会缺半截
             TransferLog.flush(sp);
@@ -138,6 +139,12 @@ public final class ServerEvents {
         ServerNetHandler.flushPendingBroadcasts();
         if (event.getServer().getTickCount() % 20 == 0) {
             ServerNetHandler.sweepExpiredUploads();
+            // 【hotfix-101】按距离订阅：新进圈的平面补发、走出去的发移除
+            try {
+                ServerNetHandler.tickSubscriptions(event.getServer());
+            } catch (Throwable t) {
+                Projector.LOGGER.warn("[Projector] 平面订阅扫描异常：{}", t.toString());
+            }
             // 【⑧】计时器倒计时归零 -> 触发绑定指令（每秒扫一次，最多晚 1 秒）
             try {
                 ServerNetHandler.tickTimers(event.getServer());

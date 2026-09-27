@@ -48,8 +48,26 @@ public final class QuadCollector {
      */
     public static final int LIGHT_SHADER_SAFE = 0xF000E0;
 
-    /** 本帧实际使用的光照值，由配置项 {@code render.avoidFullBrightLight} 决定。 */
+    /**
+     * 本帧由渲染器指定的光照值（-1 = 没指定，用配置里的固定值）。
+     *
+     * <p>【hotfix-99】打开 {@code render.realLightForWidgets} 时，渲染器会把
+     * 「平面锚点处的真实光照」塞进来 —— 这样光影包会把平面当成普通表面参与光照与阴影，
+     * 既不会发亮也不会比周围的墙更亮。</p>
+     */
+    private static int frameLight = -1;
+
+    /** 由 {@code WorldPlaneRenderer} 每个平面设置一次（-1 = 恢复固定值）。 */
+    public static void setFrameLight(int packedLight) {
+        frameLight = packedLight;
+    }
+
+    /** 本帧实际使用的光照值，由配置项 {@code render.avoidFullBrightLight} /
+     *  {@code render.realLightForWidgets} 决定。 */
     private static int currentLight() {
+        if (frameLight >= 0) {
+            return frameLight;
+        }
         try {
             return top.hmjmfabc.projector.ProjectorConfig.INSTANCE.avoidFullBrightLight.get()
                     ? LIGHT_SHADER_SAFE : LIGHT_FULL;
@@ -187,6 +205,9 @@ public final class QuadCollector {
         // orient = 三角形 a→b→c 在画布平面内的有向面积符号
         double orient = (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
         boolean flip = orient * (cx2 * nx + cy2 * ny + cz2 * nz) < 0;
+        // 【hotfix-106】反面一律**不画**（用户要求：彻底不透视）。
+        // RenderType.text 用默认 CULL，背面朝外的四边形会被剔除 —— 这正是我们要的：
+        // 站到平面后面就看不到内容（但也不会像「关掉深度测试」那样穿墙）。
 
         Quad q = obtain();
         q.argb = argb;
@@ -210,6 +231,7 @@ public final class QuadCollector {
         quadCount++;
         frameQuadTotal++;
     }
+
 
     private static boolean isFinite(double v) {
         return !Double.isNaN(v) && !Double.isInfinite(v);
