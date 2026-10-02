@@ -372,4 +372,47 @@ public final class FormatCodes {
         }
         return 0xFFFFFFFF;
     }
+
+    /**
+     * 【27.2-pre-136】{@code s} 中从下标 {@code i} 开始的格式化代码占几个字符；不是代码则返回 0。
+     *
+     * <p>用途是「按可见字数截断文本」：打字动画与音乐控件的单行省略号都要在
+     * <b>不切断格式化代码</b>的前提下取前 N 个可见字符。判定规则与 {@link #parse} 逐条对齐
+     * （{@code &&} 与 {@code &#RRGGBB}、{@code &z}、{@code &s..e..}、16 色、样式码），
+     * 不认识的代码返回 0 —— {@code parse} 对未知代码就是原样输出的。</p>
+     *
+     * <p>注意 {@code &&} 表示一个<b>字面 &amp;</b>：它占 2 个字符、但只算 1 个可见字符，
+     * 由调用方处理（返回 2，可见字计数 +1）。</p>
+     */
+    public static int codeLengthAt(String s, int i) {
+        if (s == null || i < 0 || i + 1 >= s.length() || s.charAt(i) != '&') {
+            return 0;
+        }
+        char nx = s.charAt(i + 1);
+        if (nx == '&') {
+            return 2;
+        }
+        if (nx == '#') {
+            if (i + 8 <= s.length() && tryHex(s.substring(i + 2, i + 8)) != null) {
+                return 8;
+            }
+            return 0;
+        }
+        char lc = Character.toLowerCase(nx);
+        if (lc == 'z') {
+            return 2;
+        }
+        if (lc == 's') {
+            int[] two = parseTwoColor(s, i);
+            if (two != null) {
+                return two[2] - i;
+            }
+            // 解析失败时 parse 会把它当普通字符处理
+            return 0;
+        }
+        if (COLOR_CHARS.indexOf(lc) >= 0 || STYLE_CHARS.indexOf(lc) >= 0) {
+            return 2;
+        }
+        return 0;
+    }
 }

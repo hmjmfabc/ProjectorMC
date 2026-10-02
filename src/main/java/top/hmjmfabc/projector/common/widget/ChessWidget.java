@@ -49,10 +49,23 @@ public class ChessWidget extends Widget {
     /** 那次在途提交发生的时间，用于 {@link #ECHO_GRACE_MS} 超时。 */
     private long pendingSince;
 
-    /** 棋盘背景色（ARGB）。 */
-    public int boardColor = 0xFF12121C;
-    /** 格线颜色。 */
-    public int lineColor = 0xFF7A7A92;
+    /**
+     * 棋盘底色（ARGB）。**默认完全透明**（用户 27.2-pre-136 要求：「黑色底改成透明底」）——
+     * 棋盘画在平面上，透出后面的方块/墙面比压一块黑底好看得多。
+     * 玩家想在编辑界面里给棋盘加底色，用调色盘选「棋盘底色」即可。
+     */
+    public int boardColor = 0x00000000;
+    /**
+     * 格线与九宫斜线的颜色。默认白色（与音乐控件同一套「白线」设计语言）。
+     *
+     * <p>旧存档里存的是 {@code 0xFF7A7A92}（灰蓝），{@link #loadExtra} 会把它
+     * 迁移成白色 —— 否则玩家会看到「改了默认值但我的棋盘还是灰的」。</p>
+     */
+    public int lineColor = 0xFFFFFFFF;
+    /** 棋盘外框的颜色（可调色）。 */
+    public int borderColor = 0xFFFFFFFF;
+    /** 是否画棋盘外框。 */
+    public boolean showBorder = true;
     /** 先手棋子颜色。 */
     public int colorA = 0xFFFF6666;
     /** 后手棋子颜色。 */
@@ -65,8 +78,8 @@ public class ChessWidget extends Widget {
     public boolean showGrid = true;
     /** 是否高亮最后一手。 */
     public boolean highlightLast = true;
-    /** 高亮颜色。 */
-    public int highlightColor = 0x80FFD479;
+    /** 最后一手的落点高亮颜色（半透明白；可调色）。 */
+    public int highlightColor = 0x59FFFFFF;
 
     /**
      * 每一格棋格占多少画布单位（16 单位 = 1 方块，所以 12 = 0.75 格方块）。
@@ -156,12 +169,18 @@ public class ChessWidget extends Widget {
         ensureBoard();
         GameSession g = game;
         if (g == null || g.result != 0) return java.util.List.of();
+        // 【27.2-pre-136】这个方法每帧都被渲染器调用，而它对走子类棋要跑一遍
+        // 完整着法生成（象棋开局几十个着法、每个都要试走 + 判照面）。
+        // 局面没变就不该重算：用「手数 + 选中的格子 + 结果」当签名。
+        if (hintSig == hintSignature()) {
+            return hintCache;
+        }
         if (selCol >= 0 && selRow >= 0) {
             java.util.List<top.hmjmfabc.projector.common.game.Move> out = new java.util.ArrayList<>();
             for (var m : g.legalMoves()) {
                 if (m.fx() == selCol && m.fy() == selRow) out.add(m);
             }
-            return out;
+            return cacheHints(out);
         }
         if (g.moveCount == 0) {
             // 只有落子类棋才有「第一手落点」可提示。这条早退很重要：这个方法每帧都会被调用，
@@ -169,14 +188,34 @@ public class ChessWidget extends Widget {
             boolean dropGame = g.kind == top.hmjmfabc.projector.common.game.GameKind.GOMOKU
                     || g.kind == top.hmjmfabc.projector.common.game.GameKind.GO
                     || g.kind == top.hmjmfabc.projector.common.game.GameKind.TIC_TAC_TOE;
-            if (!dropGame) return java.util.List.of();
+            if (!dropGame) return cacheHints(java.util.List.of());
             java.util.List<top.hmjmfabc.projector.common.game.Move> out = new java.util.ArrayList<>();
             for (var m : g.legalMoves()) {
                 if (m.isDrop()) out.add(m);
             }
-            return out;
+            return cacheHints(out);
         }
-        return java.util.List.of();
+        return cacheHints(java.util.List.of());
+    }
+
+    /** 提示着法的缓存：内容 + 签名。签名一变就整个重算（见 {@link #hintMoves}）。 */
+    private long hintSig = Long.MIN_VALUE;
+    private java.util.List<top.hmjmfabc.projector.common.game.Move> hintCache = java.util.List.of();
+
+    private long hintSignature() {
+        GameSession g = game;
+        if (g == null) return Long.MIN_VALUE;
+        // ⚠ 必须带上棋种：换成另一种棋之后「空盘（0 手、没选中）」的签名会与上一种棋完全一样，
+        // 缓存就会把上一个棋种的第一手提示（例如五子棋的天元）画到新棋盘上。
+        return ((long) g.moveCount << 32) ^ ((long) selCol << 16) ^ (selRow & 0xFFFFL)
+                ^ ((long) g.turn << 24) ^ ((long) g.result << 40) ^ ((long) g.kind << 48);
+    }
+
+    private java.util.List<top.hmjmfabc.projector.common.game.Move> cacheHints(
+            java.util.List<top.hmjmfabc.projector.common.game.Move> out) {
+        hintSig = hintSignature();
+        hintCache = out;
+        return out;
     }
 
     /** 空盘时是不是「第一手只允许下在特定几点」的棋（五子棋/围棋）——界面据此换文案。 */
@@ -241,6 +280,8 @@ public class ChessWidget extends Widget {
         t.putBoolean("grid", showGrid);
         t.putBoolean("hl", highlightLast);
         t.putInt("hlColor", highlightColor);
+        t.putInt("borderColor", borderColor);
+        t.putBoolean("border", showBorder);
     }
 
     @Override
@@ -273,15 +314,32 @@ public class ChessWidget extends Widget {
         }
         // 旧存档 / 手改存档都可能带着尺寸不对的棋盘，这里统一兜住
         ensureBoard();
-        boardColor = t.contains("boardColor") ? t.getInt("boardColor") : 0xFF12121C;
-        lineColor = t.contains("lineColor") ? t.getInt("lineColor") : 0xFF7A7A92;
+        // 【迁移】旧版本把「深黑底 + 灰蓝线」写死在存档里，直接换字段默认值对这些
+        // 已经存在的棋盘无效（玩家看到的还是黑的）。所以这里把**旧默认值本身**
+        // 当作「没设过颜色」处理，迁移到新的透明底 + 白线。
+        boardColor = t.contains("boardColor") ? migrateBoard(t.getInt("boardColor")) : 0x00000000;
+        lineColor = t.contains("lineColor") ? migrateLine(t.getInt("lineColor")) : 0xFFFFFFFF;
+        borderColor = t.contains("borderColor") ? t.getInt("borderColor") : 0xFFFFFFFF;
+        showBorder = !t.contains("border") || t.getBoolean("border");
         colorA = t.contains("colorA") ? t.getInt("colorA") : 0xFFFF6666;
         colorB = t.contains("colorB") ? t.getInt("colorB") : 0xFF66AAFF;
         fontId = t.contains("font") ? t.getString("font") : Fonts.MINECRAFT_AE;
         fontSize = t.contains("fs") ? t.getDouble("fs") : 12;
         showGrid = !t.contains("grid") || t.getBoolean("grid");
         highlightLast = !t.contains("hl") || t.getBoolean("hl");
-        highlightColor = t.contains("hlColor") ? t.getInt("hlColor") : 0x80FFD479;
+        highlightColor = t.contains("hlColor")
+                ? (t.getInt("hlColor") == 0x80FFD479 ? 0x59FFFFFF : t.getInt("hlColor"))
+                : 0x59FFFFFF;
+    }
+
+    /** 旧版本的棋盘底色默认值（0xFF12121C）→ 新的透明底。 */
+    public static int migrateBoard(int stored) {
+        return stored == 0xFF12121C ? 0x00000000 : stored;
+    }
+
+    /** 旧版本的格线默认值（0xFF7A7A92）→ 新的白色。 */
+    public static int migrateLine(int stored) {
+        return stored == 0xFF7A7A92 ? 0xFFFFFFFF : stored;
     }
 
     /** 这一方的棋子颜色。 */

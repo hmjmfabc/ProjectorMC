@@ -6,15 +6,17 @@ Homepage: https://github.com/hmjmfabc/ProjectorMC
 
 Bundled third-party components
 ------------------------------
-* JCodec 0.2.5 — https://jcodec.org/ — FreeBSD (BSD 2-Clause) License.
-  Embedded in the released jar as META-INF/jarjar/jcodec-0.2.5.jar (via NeoForge jarJar).
-  Used by the video converter (MP4/H.264 -> MJPEG).
+* **No video decoder is bundled any more** (27.1.3): the built-in JCodec-based converter and the
+  MJPEG / ZIP frame-sequence backend were removed. Video playback is delegated to the optional
+  WaterMedia mod at runtime (see below).
 * Audio decoders, used **only** by the music widget (see "Music module" below).
   They are embedded unmodified as separate jars in META-INF/jarjar/ and can be
   replaced individually, which is what the LGPL permits for a work that uses the library:
   - mp3spi 1.9.5.4, jlayer 1.0.1.4, tritonus-share 0.3.7.4 (MP3)
     — JavaZOOM, GNU LGPL 2.1. https://www.javazoom.net/
   - jflac-codec 1.5.3 (FLAC) — Josh Coalson / jFLAC project, BSD-style license.
+  - javasound-aac 0.9.6, bundled with JAAD (AAC / M4A decoding, includes an MP4 container parser)
+    — GNU LGPL 2.1. https://sourceforge.net/projects/jaadec/
   None of these libraries are modified, and none of their source is copied into
   this project's own source tree.
 * Optional runtime interop with WaterMedia (https://modrinth.com/mod/watermedia):
@@ -39,14 +41,46 @@ Files derived from it live in
 src/main/java/top/hmjmfabc/projector/client/music/ and in the music branch of
 client/gui/MusicPickerScreen.java.
 
-Supported audio formats are MP3 / FLAC / WAV. **AAC/M4A is intentionally not supported**:
-its decoder (javasound-aac) declares the same packages as the JAAD classes bundled inside
-JCodec, and two jar-in-jar libraries exporting the same JPMS package make ModLauncher fail
-during startup (java.lang.module.ResolutionException). The music module works without it.
+Supported audio formats are MP3 / FLAC / WAV / **AAC and M4A** (27.1.3).
+AAC/M4A had been dropped earlier because its decoder (javasound-aac, which contains JAAD)
+declared the same JPMS packages as the JAAD classes bundled inside JCodec, and two jar-in-jar
+libraries exporting the same package make ModLauncher fail at startup
+(java.lang.module.ResolutionException). JCodec is no longer bundled, so the conflict is gone
+and AAC/M4A is back. (Re-check for duplicate packages whenever a jar-in-jar is added.)
 
 Only the music module references that project: every other part of this mod
 (planes, widgets, rendering, media transfer, games, sequences, fonts) was written
 independently and shares no code with it.
+
+Online video module
+-------------------
+The online-video link resolver (Bilibili BV/av/短链/番剧/直播 与 yhdm 的接口调用与解析流程,
+src/main/java/top/hmjmfabc/projector/common/OnlineVideoLink.java and
+client/media/net/OnlineVideoResolver.java) was written after reading
+**Bilibili Media KOTS / Bilibili-Media-Mod-2-neoforge** by Polaris_Light
+(https://gitee.dev.polaris_light/bilibiliMediaNeo, https://modrinth.com/mod/bilibilimedia),
+which is published under the MIT License.
+
+No source file, class or binary from that project is copied, compiled against or bundled:
+the referenced project is a Mixin plugin for WaterMedia, whereas this mod performs the same
+public HTTP API calls with its own code, without Mixins and without linking WaterMedia.
+Only the public Bilibili endpoints/parameters and the resulting resolution flow were used
+as a reference.
+
+MCEF (Minecraft Chromium Embedded Framework)
+--------------------------------------------
+Optional runtime dependency for the "web widget" (27.2). Copyright its authors (ds58 / CinemaMod),
+licensed under the GNU Lesser General Public License v2.1 (LGPL-2.1).
+
+MCEF is NOT bundled, NOT compiled against and NOT linked: this mod contains no import of
+com.cinemamod.mcef.* or org.cef.*, declares MCEF only as an optional loader dependency, and
+reaches its public API exclusively through runtime reflection (Class.forName + getMethod).
+No source file or code fragment of MCEF was copied into this project. Per MCEF's own README,
+a project that neither modifies nor includes MCEF source code may use a different license.
+
+On Android the official MCEF build is unsupported ("This mod will not work on Android");
+players there additionally need the separate "MCEF: Android Bridge" compatibility mod, which
+is likewise neither bundled nor linked by this project.
 
 Credits
 -------

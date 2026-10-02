@@ -1651,6 +1651,19 @@ public final class MediaCache {
     }
 
     /**
+     * 【27.1.3】当前**内存里正在用**的媒体哈希（图片 + 视频帧 + 视频源）。
+     *
+     * <p>{@link CacheCleaner} 清磁盘缓存时用它做白名单：正在播/正在画的东西，
+     * 磁盘上那份不能删（删了就会在播放中途读不到数据）。</p>
+     */
+    public static Set<String> inUseHashes() {
+        Set<String> set = new HashSet<>(IMAGES.keySet());
+        set.addAll(VIDEO_FRAMES.keySet());
+        set.addAll(VIDEO_SOURCES.keySet());
+        return set;
+    }
+
+    /**
      * 【rc-85】媒体流水线的统计快照，供卡顿看门狗打日志：
      * {@code {已上传帧, 丢弃的过时帧, 已建槽位, 当前槽位总数, 在途下载数}}。
      *

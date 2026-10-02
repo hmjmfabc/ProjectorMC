@@ -108,31 +108,21 @@ dependencies {
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
 
-    // ---- 纯 Java 视频解码（把视频转成模组支持的 MJPEG / ZIP 帧序列）----
-    // 为什么用它：MP4 里的 H.264 解码器在 Android 上没法用外部程序
-    //（游戏跑在 FML/启动器的应用沙箱里，读不到 Termux 的 /data/data/com.termux，
-    //  共享存储又挂载为 noexec），打包 .so 也不符合本项目的约束。
-    // JCodec 是纯 Java 实现，不含任何 AWT / JNI 依赖，可以直接嵌进模组。
-    // 用 jarJar 打包进 jar，玩家不需要额外安装任何东西。
-    implementation "org.jcodec:jcodec:0.2.5"
-    jarJar(implementation("org.jcodec:jcodec:0.2.5")) {
-        version {
-            strictly "[0.2.5,0.3)"
-            prefer "0.2.5"
-        }
-    }
+    // ---- 视频：**不再内置任何视频解码** ----
+    // 【27.1.3】JCodec 与「MJPEG / ZIP 帧序列」那条内置后端已按用户要求整体移除：
+    // 视频一律交给**可选前置模组 WaterMedia**（运行时反射调用；mods.toml 里声明为 optional），
+    // 在线视频走「解析直链 + 流式播放」。删掉 JCodec 还有一个好处：
+    // 它自带一份 net.sourceforge.jaad.*，与音频要用的 javasound-aac 是**同名包**，
+    // 两个 jar 一起嵌会让 ModLauncher 在启动阶段直接崩（ResolutionException）——
+    // 它一走，AAC/M4A 音频才回得来。
 
-        // ---- 音乐控件：音频解码（MP3 / FLAC / AAC）----
-    // ⚠ 这三个库都是**第三方库**，许可证与代码不同（见 NOTICE）：
-    //   mp3spi + jlayer + tritonus-share = LGPL-2.1；jflac-codec = BSD 三条款。
-    //   ⚠ 曾经还嵌过 javasound-aac（AAC/M4A 解码）——**必须不要再加回来**：
-    //     它和 JCodec 自带的那份 net.sourceforge.jaad.* 是**同名包**，
-    //     两个 jar 一起嵌进模组会让 ModLauncher 的模块解析在启动阶段直接崩：
-    //     java.lang.module.ResolutionException: Modules javasound.aac and jcodec
-    //     export package net.sourceforge.jaad.aac.syntax to module mp3spi
-    //     （JPMS 不允许两个自动模块导出同一个包，与代码无关，属于打包层面的硬约束）
+    // ---- 音乐控件：音频解码（MP3 / FLAC / AAC·M4A / WAV）----
+    // ⚠ 这些是**第三方库**，许可证与代码不同（见 NOTICE）：
+    //   mp3spi + jlayer + tritonus-share = LGPL-2.1；jflac-codec = BSD 三条款；
+    //   javasound-aac（内含 JAAD，且带 mp4 容器解析 ⇒ .m4a 也认）= LGPL-2.1。
     //   它们以**未经修改的独立 jar** 嵌在 META-INF/jarjar/ 里（可单独替换），
     //   属于 LGPL 允许的「使用库的作品」，不是把库代码并入本模组源码。
+    //   ⚠ 以后再嵌任何 jar 之前，先算一遍「有没有同名包」（27.1.1 就栽在这上面）。
     implementation 'com.googlecode.soundlibs:mp3spi:1.9.5.4'
     jarJar(implementation('com.googlecode.soundlibs:mp3spi:1.9.5.4')) {
         version { strictly '[1.9.5,1.10)'; prefer '1.9.5.4' }
@@ -147,6 +137,9 @@ dependencies {
     }
     implementation 'libs:jflac-codec:1.5.3-SNAPSHOT'
     jarJar(implementation('libs:jflac-codec:1.5.3-SNAPSHOT'))
+    // AAC / M4A：本地 jar（libs/ 下；与 jflac 来自同一份参考实现的 libs/ 目录）
+    implementation 'libs:javasound-aac:0.9.6'
+    jarJar(implementation('libs:javasound-aac:0.9.6'))
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime

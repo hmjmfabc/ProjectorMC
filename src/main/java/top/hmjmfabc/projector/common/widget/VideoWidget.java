@@ -1,6 +1,7 @@
 package top.hmjmfabc.projector.common.widget;
 
 import net.minecraft.nbt.CompoundTag;
+import top.hmjmfabc.projector.common.OnlineVideoLink;
 
 /**
  * 视频控件。
@@ -20,6 +21,31 @@ public class VideoWidget extends Widget {
 
     public String mediaId = "";
     public String mediaName = "";
+
+    /**
+     * 【27.1.3】在线视频源（http/https 链接；空 = 用上传的素材）。
+     *
+     * <p>支持 B 站链接（BV/av、b23.tv 短链、番剧 ep/ss、直播）与任意直链 —— 识别与解析见
+     * {@link top.hmjmfabc.projector.common.OnlineVideoLink}。这里只存**链接字符串**：
+     * 每个客户端各自解析、各自下载到自己的缓存里，所以服务端零流量，
+     * 也不会把视频塞进存档。加载时会校验（只允许 http/https、长度 ≤
+     * {@link top.hmjmfabc.projector.common.OnlineVideoLink#MAX_LENGTH}），
+     * 不合规的一律当空串——链接会同步给所有客户端，不能变成读别人本机文件的口子。</p>
+     */
+    public String sourceUrl = "";
+
+    /**
+     * 【27.1.3】在线源默认**流式播放**（只解析出直链，交给解码器边下边播，不占磁盘、不用等）。
+     *
+     * <p>编辑器里可以关掉 ⇒ 回到老办法：整段下载到本地再播（网络不稳、或想离线看时更稳）。
+     * 直播/HLS 是无限流，无论这个开关都只能流式。</p>
+     */
+    public boolean streamOnline = true;
+
+    /** 这个控件用的是在线源吗。 */
+    public boolean isOnline() {
+        return sourceUrl != null && !sourceUrl.isEmpty();
+    }
     public int srcW, srcH;
     public int frameCount;
     public double fps = 10;
@@ -99,6 +125,10 @@ public class VideoWidget extends Widget {
     protected void saveExtra(CompoundTag t) {
         t.putString("media", mediaId);
         t.putString("mediaName", mediaName);
+        if (isOnline()) {
+            t.putString("sourceUrl", sourceUrl);
+            t.putBoolean("streamOnline", streamOnline);
+        }
         t.putInt("srcW", srcW);
         t.putInt("srcH", srcH);
         t.putInt("frames", frameCount);
@@ -117,6 +147,11 @@ public class VideoWidget extends Widget {
     public void loadExtra(CompoundTag t) {
         mediaId = t.getString("media");
         mediaName = t.getString("mediaName");
+        // 【27.1.3】在线源：只认 http/https 且长度合规的链接（别的协议一律丢弃）
+        String src = t.getString("sourceUrl");
+        sourceUrl = OnlineVideoLink.acceptable(src) ? OnlineVideoLink.normalize(src) : "";
+        // 旧存档里没有这个键 ⇒ 默认流式（新行为）
+        streamOnline = !t.contains("streamOnline") || t.getBoolean("streamOnline");
         srcW = t.getInt("srcW");
         srcH = t.getInt("srcH");
         frameCount = t.getInt("frames");

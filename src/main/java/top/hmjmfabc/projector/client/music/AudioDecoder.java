@@ -229,12 +229,12 @@ public final class AudioDecoder {
                     case MP3 -> new javazoom.spi.mpeg.sampled.file.MpegAudioFileReader()
                             .getAudioInputStream(in);
                     case FLAC -> new org.jflac.sound.spi.FlacAudioFileReader().getAudioInputStream(in);
-                    // 【27.1.1 已知限制】AAC/M4A 解码库（javasound-aac）与 JCodec 自带的
-                    // net.sourceforge.jaad.* 是同名包，两个 jar 一起嵌会让 ModLauncher 在
-                    // 启动阶段直接崩（ResolutionException: export package …），因此该 jar 已移除。
-                    // 这里给出明确原因，而不是让它去试一个根本不存在的类。
-                    case AAC -> throw new UnsupportedOperationException(
-                            "暂不支持 AAC/M4A（解码库与内置 JCodec 包名冲突，已移除；请用 MP3 / FLAC / WAV）");
+                    // 【27.1.3】AAC/M4A 回来了：JCodec 已从模组里移除，
+                    // 它自带的那份 net.sourceforge.jaad.* 不再与 javasound-aac 同名，
+                    // 所以可以重新嵌这个库（它同时含 mp4 容器解析 ⇒ .m4a 也认）。
+                    // 仍然**直接 new 这个类**，不走 ServiceLoader（jar-in-jar 的 SPI 不可控）。
+                    case AAC -> new net.sourceforge.jaad.spi.javasound.AACAudioFileReader()
+                            .getAudioInputStream(in);
                     // WAV/AIFF/AU 由 JDK 自带 provider 处理，不需要额外依赖
                     case WAV -> AudioSystem.getAudioInputStream(in);
                     default -> null;

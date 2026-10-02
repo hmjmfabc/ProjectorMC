@@ -212,6 +212,8 @@ public class CanvasWidgetView extends AbstractWidget {
             case Widget.KIND_WEATHER -> 0x55FFDD33;
             case Widget.KIND_PROGRESS -> 0x55FF44AA;
             case Widget.KIND_MUSIC -> 0x554FC3F7;
+            // 【27.2】网页控件：青色（与音乐的天蓝、图片的绿、视频的橙都不撞）
+            case Widget.KIND_WEB -> 0x5533E0D0;
             default -> 0x55FFFFFF;
         };
         gfx.fill(x0, y0, x1, y1, fill);

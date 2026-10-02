@@ -96,6 +96,12 @@ public final class Widgets {
                 w.w = 112;
                 w.h = 20;
             }
+            case Widget.KIND_WEB -> {
+                // 网页按 16:9 起手（和「新建在线视频」同一个默认比例），并给个能看的地址框
+                WebWidget web = (WebWidget) w;
+                web.w = 96;
+                web.h = 54;
+            }
             default -> {
                 w.w = 32;
                 w.h = 32;

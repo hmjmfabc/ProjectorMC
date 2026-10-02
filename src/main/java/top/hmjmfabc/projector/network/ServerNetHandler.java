@@ -430,6 +430,23 @@ public final class ServerNetHandler {
                         player.displayClientMessage(Component.translatable("projector.msg.content_protected"), true);
                         yield false;
                     }
+                    // 【27.2】服务端可以整体关掉网页控件（web.allowWebWidget=false）。
+                    // 这是「不允许这种控件存在」的硬闸门：客户端按钮已经置灰，
+                    // 但客户端拦住不算数 —— 这里必须再判一次并**说明原因**（不许静默拒绝）。
+                    if (args.contains("widget")) {
+                        Widget probe = top.hmjmfabc.projector.common.widget.Widgets.load(
+                                args.getCompound("widget"));
+                        if (probe != null && probe.kind() == Widget.KIND_WEB
+                                && !ProjectorConfig.INSTANCE.webAllowWebWidget.get()) {
+                            player.displayClientMessage(
+                                    Component.translatable("projector.msg.web_disabled"), true);
+                            Projector.LOGGER.info(
+                                    "[Projector][\u7f51\u9875] \u62d2\u7edd\u65b0\u589e\u7f51\u9875\u63a7\u4ef6\uff1a\u670d\u52a1\u5668\u5df2\u7981\u7528"
+                                            + "\uff08\u73a9\u5bb6={} \u5e73\u9762={}\uff09",
+                                    player.getGameProfile().getName(), plane.id);
+                            yield false;
+                        }
+                    }
                     yield addWidget(level, plane, args, player);
                 }
                 case "updateWidget" -> {
@@ -702,6 +719,28 @@ public final class ServerNetHandler {
     }
 
     /**
+     * 【27.2】这个动作是不是网页控件的「导航按钮」（属于「用一下」而不是「改内容」）。
+     *
+     * <p>它必须和客户端 {@code WebControls.actionName(int)} 逐个对得上：
+     * 两边各写一份名字就一定会有一份忘改（本项目的老教训）。</p>
+     */
+    private static boolean isWebNav(String action) {
+        return "back".equals(action) || "forward".equals(action)
+                || "refresh".equals(action) || "home".equals(action);
+    }
+
+    /** 审计日志里用的中文动作名。 */
+    private static String webNavName(String action) {
+        return switch (action) {
+            case "back" -> "\u540e\u9000";
+            case "forward" -> "\u524d\u8fdb";
+            case "refresh" -> "\u5237\u65b0";
+            case "home" -> "\u4e3b\u9875";
+            default -> action;
+        };
+    }
+
+    /**
      * 记录「为什么这次控件更新被拒绝」。
      *
      * <p>以前这些分支都是静默 {@code return false}，客户端完全收不到反馈，
@@ -848,6 +887,22 @@ public final class ServerNetHandler {
                 mw.durationMs = (long) Sanitize.clamp(mw.durationMs, 0, 24 * 3600_000L, 0);
                 mw.positionMs = (long) Sanitize.clamp(mw.positionMs, 0, 24 * 3600_000L, 0);
             }
+            case Widget.KIND_WEB -> {
+                // 【27.2】网页控件：URL 与显示参数全部夹一遍。
+                // 判据只有一份 —— WebWidget.sanitize()（编辑器与服务端共用），
+                // 这里额外把「渲染密度」按配置上限再夹一次（它是显存/CPU 开销的直接来源）。
+                var web = (top.hmjmfabc.projector.common.widget.WebWidget) w;
+                web.sanitize();
+                int maxPpu = top.hmjmfabc.projector.ProjectorConfig.INSTANCE.webMaxPixelPerUnit.get();
+                if (web.pixelPerUnit > maxPpu) {
+                    web.pixelPerUnit = Math.max(1, maxPpu);
+                }
+                // 服务端只存「看什么」：不合法/超长的地址一律清空（=空白页），
+                // 免得别的客户端拿到一个 file:/javascript: 之类的东西。
+                if (web.url != null && web.url.length() > top.hmjmfabc.projector.common.widget.WebWidget.MAX_URL) {
+                    web.url = "";
+                }
+            }
             case Widget.KIND_LEADERBOARD -> {
                 var lw = (top.hmjmfabc.projector.common.widget.LeaderboardWidget) w;
                 lw.titleSize = Sanitize.clamp(lw.titleSize, 0.5, 256, 10);
@@ -937,7 +992,8 @@ public final class ServerNetHandler {
                 // 新会话
                 // 【②】配额按身份取：普通玩家 4 MB / 64 MB，管理员 16 MB / 256 MB，
                 // 单人存档与联机房间完全不限（Long.MAX_VALUE）。
-                long limit = payload.video() ? videoLimitFor(player) : imageLimitFor(player);
+                long limit = videoQuota(payload.video(), payload.name())
+                        ? videoLimitFor(player) : imageLimitFor(player);
                 if (payload.video()) {
                     String blocked = blockReasonForVideo(player, payload.totalSize());
                     if (blocked != null) {
@@ -1300,6 +1356,17 @@ public final class ServerNetHandler {
         return v <= 0 ? Long.MAX_VALUE : v;
     }
 
+    /**
+     * 【27.2】这次上传按哪一档配额算。
+     *
+     * <p>音频（mp3 / flac / wav / m4a / aac）与视频**同档**：一首无损 FLAC 十几 MB，
+     * 用图片那 4 MB 的档会直接传不上去 —— 那正是「服务器上其他玩家听不到本地音乐」
+     * 的一半原因（另一半是客户端以前根本没上传过本地音乐）。</p>
+     */
+    public static boolean videoQuota(boolean video, @Nullable String name) {
+        return video || Sanitize.isAudioName(name);
+    }
+
     /** 本次上传适用的视频上限（字节）；{@code Long.MAX_VALUE} = 不限。 */
     public static long videoLimitFor(ServerPlayer player) {
         if (unlimited(player)) return Long.MAX_VALUE;
@@ -1471,9 +1538,13 @@ public final class ServerNetHandler {
             // 【hotfix-98】播放控制（启停 / 跳进度）**不算「改内容」**，任何玩家都能按：
             // 内容保护是防涂鸦的，不是防「暂停一下」的；以前它连自己的视频都暂停不了
             //（被服务端静默拒绝 ⇒ 表现就是「暂停/启动按钮有时不好使」）。
+            // 【27.2】网页控件的导航按钮同理：后退 / 前进 / 刷新 / 回主页都是「用一下」，
+            // 不是「改内容」——按一下不该需要管理员权限（作者能不能关掉它见下面
+            // publicControls 那道闸门）。顺带留下审计日志。
             boolean playbackAction = "toggle".equals(payload.action())
                     || "seek".equals(payload.action())
-                    || "stop".equals(payload.action());
+                    || "stop".equals(payload.action())
+                    || isWebNav(payload.action());
             if (!playbackAction && !PlanePermissions.canEditContent(plane, player)) {
                 player.displayClientMessage(Component.translatable("projector.msg.content_protected"), true);
                 // 【rc-78】同 onPlaneEdit：拒绝之后必须让发起者回滚
@@ -1482,6 +1553,29 @@ public final class ServerNetHandler {
             }
             Widget w = plane.widgetById(payload.widgetId());
             long now = level.getGameTime();
+
+            // 【27.2】网页控件的导航按钮：**不改控件内容、也不广播**。
+            // 网页画面存在于**每个客户端各自的浏览器**里，我按「后退」不该把别人的页面也倒回去；
+            // 服务端这一侧只做两件事：①按作者的 publicControls 决定放不放行，②留一条审计日志。
+            if (w instanceof top.hmjmfabc.projector.common.widget.WebWidget web
+                    && isWebNav(payload.action())) {
+                if (!web.publicControls && !PlanePermissions.canEditContent(plane, player)) {
+                    // 作者关了「允许他人操作」⇒ 只有能改内容的人按得动（与客户端同一份判据）
+                    player.displayClientMessage(
+                            Component.translatable("projector.msg.web_public_denied"), true);
+                    Projector.LOGGER.info(
+                            "[Projector][\u7f51\u9875] \u62d2\u7edd\u5bfc\u822a\u52a8\u4f5c\uff1a\u4f5c\u8005\u5df2\u7981\u6b62\u4ed6\u4eba\u64cd\u4f5c"
+                                    + "\uff08\u73a9\u5bb6={} \u5e73\u9762={} \u63a7\u4ef6={} \u52a8\u4f5c={}\uff09",
+                            player.getGameProfile().getName(), plane.id, web.id, payload.action());
+                    return;
+                }
+                Projector.LOGGER.info(
+                        "[Projector][\u7f51\u9875] \u5ba1\u8ba1\uff1a\u73a9\u5bb6 {} \u6309\u4e86\u300c{}\u300d"
+                                + "\uff08\u5e73\u9762={} \u63a7\u4ef6={} \u5730\u5740={}\uff09",
+                        player.getGameProfile().getName(), webNavName(payload.action()),
+                        plane.id, web.id, web.displayUrl());
+                return;
+            }
 
             // 【hotfix-98】视频控件：世界里点左下角的小播放键 → 服务端翻转状态并广播。
             // 位置锚点写在控件数据里（startTimeMs / pausedFrame），所以所有客户端

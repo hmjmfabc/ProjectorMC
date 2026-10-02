@@ -77,3 +77,11 @@ TODO_NEXT.md
 # 仓库不再分发；构建前请自行放入 src/main/resources/assets/projector/font/
 /src/main/resources/assets/projector/font/minecraft.ttf
 /src/main/resources/assets/projector/font/caviar_dreams.ttf
+
+# 第三方参考源码（MIT，只读参考，不入库）
+/Bilibili-Media-Mod-2-neoforge/
+/NetMusic-1.21/
+/watermedia*/
+
+# 第三方安卓兼容层源码/二进制（GPL-3.0：本模组只按 modid 检测，不引用其代码，不入库）
+/WATERMeDIA-Android-Bridge-main/

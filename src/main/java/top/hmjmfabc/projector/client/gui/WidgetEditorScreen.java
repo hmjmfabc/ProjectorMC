@@ -59,6 +59,16 @@ public class WidgetEditorScreen extends ProjectorScreen {
     /** ⑦ 时钟标题输入框。 */
     @Nullable
     private EditBox clockTitleBox;
+
+    /** 【27.1.3】视频控件的「在线链接」输入框（留空 = 用上传的素材）。 */
+    private EditBox onlineLinkBox;
+    /** 【27.2】网页控件的地址输入框。 */
+    @Nullable
+    private EditBox webUrlBox;
+    /** 地址框上一次是否处于聚焦状态（用于「失焦即生效」）。 */
+    private boolean webUrlFocused;
+    /** 地址非法时给玩家看的一行红字（绝不静默丢弃）。 */
+    private String webUrlHint = "";
     /** ⑧ 计时器的「精确秒数」输入框（滑块表达不了 0~2147483647）。 */
     @Nullable
     private EditBox timerSecondsBox;
@@ -136,6 +146,11 @@ public class WidgetEditorScreen extends ProjectorScreen {
     protected void init() {
         // 每次 init() 都重置提交闩锁：删除确认框取消后会回到同一个界面实例，
         // 若不复位，removed() 的兜底提交就永久失效了。
+        // 【27.2】重建界面之前先把地址框里没提交的内容收进来。
+        // 时序：点其它按钮 → 焦点转移 → rebuildWidgets() → init() 换掉 webUrlBox；
+        // 等下一次 render 时那个「失焦提交」判据已经指向新框了，输入的内容会丢。
+        // 此刻 webUrlBox 还是**旧**那个，正好读得到。
+        commitWebUrl();
         saved = false;
         childScreen = false;
         rowLabels.clear();
@@ -178,9 +193,32 @@ public class WidgetEditorScreen extends ProjectorScreen {
                 rebuildWidgets();
             });
             y += 22;
+            // 【27.2-pre-136】「打字」动画（参考剪映）：文字一个一个字冒出来。
+            // 开关与速度都在调色盘之前 —— 它属于「常用外观设置」，不能排到最后被跳过。
+            button("\u6253\u5b57\u52a8\u753b\uff1a" + (tw.typewriter ? "\u5f00" : "\u5173"),
+                    cx + 4, y, cw / 2 - 6, 18, b -> {
+                tw.typewriter = !tw.typewriter;
+                previewMessage = tw.typewriter
+                        ? "\u6253\u5b57\u52a8\u753b\u5df2\u5f00\uff08\u6bcf\u79d2 "
+                                + formatValue(tw.typeSpeed, true) + " \u5b57\uff09"
+                        : "\u6253\u5b57\u52a8\u753b\u5df2\u5173";
+                rebuildWidgets();
+            });
+            button("\u6253\u5b8c\uff1a" + (tw.typeLoop ? "\u5faa\u73af" : "\u505c\u4f4f"),
+                    cx + cw / 2 + 2, y, cw / 2 - 6, 18, b -> {
+                tw.typeLoop = !tw.typeLoop;
+                rebuildWidgets();
+            });
+            y += 22;
             // 调色盘放在靠上的位置：它是文字控件最常用的功能，
             // 若放在一长串滑块之后，屏幕不够高时会被空间判断直接跳过（玩家看不到调色盘）。
             y = colorPalette(cx, y, cw, tw);
+            if (tw.typewriter) {
+                y = sliderRow(cx, y, cw, "\u6253\u5b57\u901f\u5ea6(\u5b57/\u79d2)", 1, 30, tw.typeSpeed, false,
+                        v -> tw.typeSpeed = v);
+                y = sliderRow(cx, y, cw, "\u6253\u5b8c\u505c\u987f(\u79d2)", 0, 10, tw.typeHold, false,
+                        v -> tw.typeHold = v);
+            }
             // 数值滑块放最后：空间不足时它们会被优雅地省略，不会影响上面的功能
             y = sliderRow(cx, y, cw, "\u5b57\u53f7", 0.5, 256, tw.fontSize, false,
                     v -> tw.fontSize = v);
@@ -220,6 +258,9 @@ public class WidgetEditorScreen extends ProjectorScreen {
             // 表现就是「暂停/启动按钮有时不好使」。常用功能不许排在最后（本文件的老教训）。
             Button playBtn = button(vw.paused ? "\u5df2\u6682\u505c" : "\u64ad\u653e\u4e2d",
                     cx + 4, y, cw / 2 - 6, 18, b -> {
+                        // 【27.1.3】按需加载：编辑器里点播放 = 「我要看」⇒ 允许下载
+                        //（预览区也就能显示出来；不点的话视频不会偷偷下载）
+                        top.hmjmfabc.projector.client.media.VideoControls.request(vw.id);
                         // 单一入口：暂停记下当前帧、继续从这一帧重锚时间
                         vw.setPausedAt(!vw.paused, System.currentTimeMillis());
                         rebuildWidgets();
@@ -231,6 +272,45 @@ public class WidgetEditorScreen extends ProjectorScreen {
                         rebuildWidgets();
                     });
             loopBtn.active = canEdit;
+            y += 22;
+            // 【27.1.3】在线视频：把链接粘进来就行（B 站 BV/av/b23.tv 短链/番剧 ep·ss/直播，
+            // 或任意 http(s) 直链）。留空 = 回到上面「替换视频」选的那个素材。
+            // 链接只占 NBT 里一个字符串：每个客户端各自解析下载，服务端零流量。
+            onlineLinkBox = editBox(cx + 4, y, cw - 8, 18, vw.sourceUrl,
+                    top.hmjmfabc.projector.common.OnlineVideoLink.MAX_LENGTH, s -> {
+                        String v = s == null ? "" : s.trim();
+                        if (v.isEmpty()) {
+                            if (vw.isOnline()) {
+                                vw.sourceUrl = "";
+                                top.hmjmfabc.projector.client.media.net.OnlineVideoCache.clear();
+                            }
+                        } else if (top.hmjmfabc.projector.common.OnlineVideoLink.acceptable(v)) {
+                            String norm = top.hmjmfabc.projector.common.OnlineVideoLink.normalize(v);
+                            if (!norm.equals(vw.sourceUrl)) {
+                                vw.sourceUrl = norm;
+                                // 链接变了：让在线缓存立刻重新解析（旧任务按 URL 归键，不会串）
+                                top.hmjmfabc.projector.client.media.net.OnlineVideoCache.reset(norm);
+                                top.hmjmfabc.projector.Projector.LOGGER.info(
+                                        "[Projector][在线视频] 控件 {} 设为在线源：{}",
+                                        vw.id.toString().substring(0, 8), norm);                            }
+                        }
+                    });
+            onlineLinkBox.setEditable(canEdit);
+            y += 22;
+            // 【27.1.3】在线源的播放方式开关（只对在线链接有意义）：
+            //   默认「流式」= 不解码前先下载，边下边播（省磁盘、不用等）；
+            //   关掉 = 老办法：整段下载到本地再播（网络不稳时更顺，也方便离线看）。
+            Button streamBtn = button(vw.streamOnline
+                            ? "\u5728\u7ebf\u64ad\u653e\uff1a\u6d41\u5f0f\uff08\u4e0d\u4e0b\u8f7d\uff09"
+                            : "\u5728\u7ebf\u64ad\u653e\uff1a\u5148\u4e0b\u8f7d\u518d\u64ad",
+                    cx + 4, y, cw - 8, 18, b -> {
+                        vw.streamOnline = !vw.streamOnline;
+                        // 切换策略 ⇒ 之前那次「点了播放」作废：重新点一次播放键才按新策略加载
+                        top.hmjmfabc.projector.client.media.VideoControls.forget(vw.id);
+                        top.hmjmfabc.projector.client.media.net.OnlineVideoCache.reset(vw.sourceUrl);
+                        rebuildWidgets();
+                    });
+            streamBtn.active = canEdit;
             y += 22;
             // 【27.1.2】不提供「播放后端」选项：能放就放，放不了自动换另一条路。
             //（控件里仍保留 backend 字段以兼容旧存档，界面不再暴露。）
@@ -352,6 +432,8 @@ public class WidgetEditorScreen extends ProjectorScreen {
             y = chessBranch(ch, cx, y, cw);
         } else if (widget instanceof MusicWidget mw) {
             y = musicBranch(mw, cx, y, cw);
+        } else if (widget instanceof top.hmjmfabc.projector.common.widget.WebWidget web) {
+            y = webBranch(web, cx, y, cw);
         }
 
         // 底部按钮
@@ -657,10 +739,46 @@ public class WidgetEditorScreen extends ProjectorScreen {
 
     private final java.util.Map<Integer, String> rowLabels = new java.util.HashMap<>();
 
+    /**
+     * 【27.2-pre-136】这个控件的颜色有几个「部位」可调（null = 只有一个颜色）。
+     *
+     * <p>用户要求「音乐控件与棋类游戏支持边框调色，把调色盘塞进去」：
+     * 这两类控件都有好几个颜色，所以调色盘上方多一行「调色盘改：<部位>」按钮，
+     * 点哪个部位就改哪个 —— 不然只能改一个颜色，别的颜色永远动不了。</p>
+     */
+    private static String[] colorParts(Widget target) {
+        if (target instanceof MusicWidget) {
+            return new String[]{"\u8fdb\u5ea6\u8272", "\u8fb9\u6846\u8272"};
+        }
+        if (target instanceof top.hmjmfabc.projector.common.widget.ChessWidget) {
+            return new String[]{"\u8fb9\u6846\u8272", "\u683c\u7ebf\u8272",
+                    "\u68cb\u76d8\u5e95\u8272", "\u6700\u540e\u4e00\u624b"};
+        }
+        return null;
+    }
+
+    /** 调色盘当前改的是第几个「部位」（与 {@link #colorParts} 对应）。 */
+    private int colorPart;
+
     /** 生成调色盘 + 样式按钮，返回下一个空闲 y。 */
     private int colorPalette(int x, int y, int w, Widget target) {
         // 只要求能放下「色块两行 + 样式一行」；空间再紧张也要把色块画出来，
         // 因为调色盘是文字控件最核心的功能之一。
+        String[] parts = colorParts(target);
+        if (parts != null && y + 18 <= bottomLimit) {
+            // 部位选择行：一行放得下就一行（4 个部位时每个按钮窄一些）
+            int pw = Math.max(24, (w - 12) / parts.length - 2);
+            for (int i = 0; i < parts.length; i++) {
+                final int idx = i;
+                String label = (i == colorPart ? "\u25b8" : "") + parts[i];
+                button(label, x + 4 + i * (pw + 2), y, pw, 16, b -> {
+                    colorPart = idx;
+                    previewMessage = "\u8c03\u8272\u76d8\u6539\uff1a" + parts[idx];
+                    rebuildWidgets();
+                });
+            }
+            y += 18;
+        }
         if (y + 44 > bottomLimit) {
             return y;
         }
@@ -742,6 +860,10 @@ public class WidgetEditorScreen extends ProjectorScreen {
             saveInternal();
         }).active = canEdit;
         y += 22;
+        // 【27.2-pre-136】调色盘放在靠上的位置（本项目老教训：排最后的控件在屏幕矮时
+        // 会被空间判断整行跳过，玩家看到的就是「没有这个功能」）。
+        // 棋盘默认「透明底 + 白线 + 白边框」，所以调色盘就是它的主要外观设置。
+        y = colorPalette(cx, y, cw, ch);
         textRow("\u6a21\u5f0f\uff1a" + top.hmjmfabc.projector.common.game.GameMode.name(g.mode), y);
         y += 12;
         button("\u5207\u6362\u6a21\u5f0f", cx + 4, y, cw - 8, 18, b -> {
@@ -774,6 +896,22 @@ public class WidgetEditorScreen extends ProjectorScreen {
         });
         button(ch.highlightLast ? "\u9ad8\u4eae\u6700\u540e\u4e00\u624b" : "\u4e0d\u9ad8\u4eae", cx + cw / 2 + 2, y, cw / 2 - 6, 18, b -> {
             ch.highlightLast = !ch.highlightLast;
+            rebuildWidgets();
+        });
+        y += 22;
+        // 【27.2-pre-136】两个「回得到透明/无色」的开关：
+        // 调色盘那 16 个色块全是**不透明**颜色，一旦点过就再也回不到默认的「透明底 / 无边框」，
+        // 所以这里必须各给一个开关（否则玩家点错一次就只能删掉控件重来）。
+        button((ch.borderColor >>> 24) == 0 ? "\u8fb9\u6846\uff1a\u65e0" : "\u8fb9\u6846\uff1a\u6709",
+                cx + 4, y, cw / 2 - 6, 18, b -> {
+            boolean on = (ch.borderColor >>> 24) != 0;
+            ch.borderColor = on ? 0x00000000 : 0xFFFFFFFF;
+            ch.showBorder = !on;
+            rebuildWidgets();
+        });
+        button((ch.boardColor >>> 24) == 0 ? "\u5e95\u8272\uff1a\u900f\u660e" : "\u5e95\u8272\uff1a\u6709\u8272",
+                cx + cw / 2 + 2, y, cw / 2 - 6, 18, b -> {
+            ch.boardColor = (ch.boardColor >>> 24) == 0 ? 0x80000000 : 0x00000000;
             rebuildWidgets();
         });
         y += 22;
@@ -818,10 +956,26 @@ public class WidgetEditorScreen extends ProjectorScreen {
             previewMessage = "\u5df2\u63d2\u5165\u53cc\u8272\u6e10\u53d8 " + code;
             return;
         }
-        // 【27.1.1】音乐控件：调色盘改的是「进度色」（波形已放部分 + 播放键图形）
+        // 【27.1.1】音乐控件：默认改进度色；【27.2-pre-136】选了「边框色」就改边框
         if (target instanceof MusicWidget mw) {
-            mw.accentColor = argb;
-            previewMessage = "\u97f3\u4e50\u8fdb\u5ea6\u8272 " + hex6(argb);
+            if (colorPart == 1) {
+                mw.borderColor = argb;
+                previewMessage = "\u97f3\u4e50\u8fb9\u6846\u8272 " + hex6(argb);
+            } else {
+                mw.accentColor = argb;
+                previewMessage = "\u97f3\u4e50\u8fdb\u5ea6\u8272 " + hex6(argb);
+            }
+            return;
+        }
+        // 【27.2-pre-136】棋类游戏：边框 / 格线 / 棋盘底色 / 最后一手，四个部位都能调
+        if (target instanceof top.hmjmfabc.projector.common.widget.ChessWidget cw) {
+            switch (colorPart) {
+                case 1 -> cw.lineColor = argb;
+                case 2 -> cw.boardColor = argb;
+                case 3 -> cw.highlightColor = argb;
+                default -> cw.borderColor = argb;
+            }
+            previewMessage = colorParts(target)[Math.min(colorPart, 3)] + " " + hex6(argb);
             return;
         }
         // 【③b】排行榜：调色盘改的是「当前编辑的那一部分」的颜色
@@ -966,6 +1120,9 @@ public class WidgetEditorScreen extends ProjectorScreen {
             // 无权限：服务端一定会拒绝，不必浪费一次网络往返
             return;
         }
+        // 【27.2】保存前先把地址框里「还没提交」的内容收进来：
+        // 玩家可能打完地址直接点「保存并返回」，那条路不会经过失焦/回车。
+        commitWebUrl();
         if (textBox != null && widget instanceof TextWidget tw) {
             tw.text = textBox.getValue();
             // 关键：只有当「文字内容 / 字体 / 字号」真的发生变化时才重算尺寸。
@@ -1117,9 +1274,60 @@ public class WidgetEditorScreen extends ProjectorScreen {
                     pvY + 5, TEXT_DIM);
         }
         drawPreview(gfx);
-        if (!previewMessage.isEmpty()) {
+        if (widget instanceof VideoWidget vw && vw.isOnline()) {
+            // 在线源的状态就写在这：排队/解析中/下载 xx%/已就绪/失败原因
+            label(gfx, "\u3010\u5728\u7ebf\u3011" + top.hmjmfabc.projector.client.media.net.OnlineVideos.status(vw),
+                    pvX + 6, pvY + pvH - 24, TEXT_DIM);
+        }
+        if (widget instanceof top.hmjmfabc.projector.common.widget.WebWidget webw) {
+            // 【27.2】网页控件：底部一行状态（未安装 / 初始化中 / 加载中 / 已就绪 / 无帧超时 / 已释放）
+            label(gfx, "\u72b6\u6001\uff1a" + webStatus(webw), pvX + 6, pvY + pvH - 24, TEXT_DIM);
+            // 地址框失去焦点即生效（Android 上没有回车键可用）
+            if (webUrlBox != null) {
+                boolean focused = webUrlBox.isFocused();
+                if (webUrlFocused && !focused) {
+                    commitWebUrl();
+                }
+                webUrlFocused = focused;
+            }
+        }
+        if (!webUrlHint.isEmpty()) {
+            // 非法地址不静默丢弃：红字写清「哪里不行」
+            label(gfx, webUrlHint, pvX + 6, pvY + pvH - 12, TEXT_RED);
+        } else if (!previewMessage.isEmpty()) {
             label(gfx, previewMessage, pvX + 6, pvY + pvH - 12, TEXT_DIM);
         }
+    }
+
+    /**
+     * 网页状态那一行：整段包在 try/catch 里。
+     *
+     * <p>状态来自可选前置模组的反射桥，安卓上「原生库加载失败」抛的是 {@code Error}；
+     * 一个状态字串不值得让编辑界面崩掉，所以拿不到就说「未知」。</p>
+     */
+    private static String webStatus(top.hmjmfabc.projector.common.widget.WebWidget webw) {
+        try {
+            String s = top.hmjmfabc.projector.client.web.WebSessions.status(webw);
+            return s == null || s.isBlank() ? "\u672a\u77e5" : s;
+        } catch (Throwable t) {
+            return "\u672a\u77e5";
+        }
+    }
+
+    /**
+     * 回车 = 提交地址框（触屏上没键盘时靠「失焦」那条路，见 {@code render}）。
+     */
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        // 注意：GLFW **没有** GLFW_KEY_RETURN（只有 ENTER 与 KP_ENTER），
+        // 别凭记忆写 —— 那是个编译期就能发现的错（javap 过 lwjgl-glfw 3.3.3）。
+        boolean enter = keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER
+                || keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER;
+        if (enter && webUrlBox != null && webUrlBox.isFocused()) {
+            commitWebUrl();
+            return true;
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
     /** 在 2D 屏幕空间里预览控件（使用与游戏内完全相同的渲染代码）。 */
@@ -1212,6 +1420,17 @@ public class WidgetEditorScreen extends ProjectorScreen {
                 })));
         y += 24;
 
+        // 【27.2-pre-136】调色盘上移到分支前部：它现在管「进度色 / 边框色」两个部位，
+        // 是音乐控件最常用的外观设置，排到最后会被空间判断跳过。
+        y = colorPalette(cx, y, cw, mw);
+        // 边框开关：调色盘给的 16 个色块都是不透明的，选过之后就回不到「不要边框」，
+        // 所以单独给一个开关（透明 = 不画那一圈）。
+        button((mw.borderColor >>> 24) == 0 ? "\u8fb9\u6846\uff1a\u65e0" : "\u8fb9\u6846\uff1a\u6709",
+                cx + 4, y, cw - 8, 18, b -> {
+            mw.borderColor = (mw.borderColor >>> 24) == 0 ? 0xFFFFFFFF : 0x00000000;
+            rebuildWidgets();
+        });
+        y += 22;
         if (y + 22 <= bottomLimit) {
             button(mw.playing ? "\u6682\u505c\uff08\u4e16\u754c\u91cc\u70b9\u64ad\u653e\u952e\u4e5f\u884c\uff09"
                             : "\u5f00\u59cb\u64ad\u653e\uff08\u4e16\u754c\u91cc\u70b9\u64ad\u653e\u952e\u4e5f\u884c\uff09",
@@ -1251,8 +1470,186 @@ public class WidgetEditorScreen extends ProjectorScreen {
                     })));
             y += 22;
         }
-        y = colorPalette(cx, y, cw, mw);
         return y;
+    }
+
+    /**
+     * 网页控件专用的编辑区（27.2）。
+     *
+     * <p><b>排序原则（本文件的老教训，已经踩过两次）</b>：常用功能必须排在分支**最上面一行**
+     * —— 布局在 {@code y > bottomLimit} 时会跳过整行，排最后的按钮在屏幕一矮时
+     * 就会跑到面板外/与底部按钮重叠，表现就是「按钮有时不好使」。
+     * 所以第一行固定是 ⟳ 刷新 / ← 后退 / → 前进 / ⌂ 主页。</p>
+     *
+     * <p>编辑区里<b>不出现后端名字</b>：只显示「状态：…」这一行人话
+     * （由 {@code WebSessions.status} 给出），没装前置模组时也只说「不可用」。</p>
+     */
+    private int webBranch(top.hmjmfabc.projector.common.widget.WebWidget ww, int cx, int y, int cw) {
+        final int quarter = (cw - 12) / 4;
+        // ---- 第一行：四个导航按钮（最常用，位置最稳）----
+        button("\u27f3 \u5237\u65b0", cx + 4, y, quarter, 18,
+                b -> webButton(ww, top.hmjmfabc.projector.common.widget.WebWidget.BTN_REFRESH,
+                        "\u5df2\u5237\u65b0"));
+        button("\u2190 \u540e\u9000", cx + 6 + quarter, y, quarter, 18,
+                b -> webButton(ww, top.hmjmfabc.projector.common.widget.WebWidget.BTN_BACK,
+                        "\u5df2\u540e\u9000"));
+        button("\u2192 \u524d\u8fdb", cx + 8 + quarter * 2, y, quarter, 18,
+                b -> webButton(ww, top.hmjmfabc.projector.common.widget.WebWidget.BTN_FORWARD,
+                        "\u5df2\u524d\u8fdb"));
+        button("\u2302 \u4e3b\u9875", cx + 10 + quarter * 3, y, quarter, 18,
+                b -> webButton(ww, top.hmjmfabc.projector.common.widget.WebWidget.BTN_HOME,
+                        "\u5df2\u56de\u4e3b\u9875"));
+        y += 22;
+
+        // ---- 地址输入框：回车或失去焦点时生效（Android 上没有回车键也能用）----
+        if (y + 34 <= bottomLimit) {
+            textRow("\u5730\u5740\uff08\u53ea\u652f\u6301 http:// \u4e0e https://\uff09", y);
+            if (ww.url.isEmpty()) {
+                // 新建的网页控件先说一句「这里怎么用」，免得玩家对着空白页发呆
+                previewMessage = plainLang("projector.msg.web_hint",
+                        "\u5728\u4e0b\u9762\u586b\u5730\u5740\uff1b\u4e16\u754c\u91cc\u5bf9\u51c6\u63a7\u4ef6\u5e95\u90e8\u70b9\u4e00\u4e0b\u53ef\u53eb\u51fa\u6309\u94ae\u680f");
+            }
+            webUrlBox = editBox(cx + 4, y + 11, cw - 8, 18, ww.url,
+                    top.hmjmfabc.projector.common.widget.WebWidget.MAX_URL, s -> {
+                        // 每次输入只更新提示，不立刻导航（否则每敲一个字符就加载一次网页）
+                        String v = s == null ? "" : s.trim();
+                        webUrlHint = v.isEmpty()
+                                || top.hmjmfabc.projector.common.widget.WebWidget.acceptable(v)
+                                ? "" : plainLang("projector.msg.web_bad_url",
+                                        "\u5730\u5740\u65e0\u6548\uff08\u53ea\u652f\u6301 http/https\uff09");
+                    });
+            webUrlBox.setEditable(canEdit);
+            y += 34;
+        }
+
+        // ---- 三个开关（一行放得下）----
+        if (y + 22 <= bottomLimit) {
+            int third = (cw - 12) / 3;
+            Button ctrlBtn = button(ww.showControls ? "\u6309\u94ae\u680f\uff1a\u663e\u793a" : "\u6309\u94ae\u680f\uff1a\u9690\u85cf",
+                    cx + 4, y, third, 18, b -> {
+                        ww.showControls = !ww.showControls;
+                        if (!ww.showControls) {
+                            // 关掉之后世界里的那条栏不该再冒出来
+                            top.hmjmfabc.projector.client.web.WebControls.forget(ww.id);
+                        }
+                        rebuildWidgets();
+                    });
+            ctrlBtn.active = canEdit;
+            Button pubBtn = button(ww.publicControls ? "\u4ed6\u4eba\uff1a\u53ef\u64cd\u4f5c" : "\u4ed6\u4eba\uff1a\u7981\u6b62",
+                    cx + 6 + third, y, third, 18, b -> {
+                        ww.publicControls = !ww.publicControls;
+                        rebuildWidgets();
+                    });
+            pubBtn.active = canEdit;
+            Button transBtn = button(ww.transparent ? "\u80cc\u666f\uff1a\u900f\u660e" : "\u80cc\u666f\uff1a\u4e0d\u900f\u660e",
+                    cx + 8 + third * 2, y, third, 18, b -> {
+                        ww.transparent = !ww.transparent;
+                        // 透明度换了必须重建浏览器才生效
+                        top.hmjmfabc.projector.client.web.WebControls.reveal(ww.id);
+                        rebuildWidgets();
+                    });
+            transBtn.active = canEdit;
+            y += 22;
+        }
+
+        // ---- 数值滑块（放最后：空间不够时被跳过也不影响主要功能）----
+        y = sliderRow(cx, y, cw, "\u7f29\u653e", -3, 5, ww.zoom, false, v -> ww.zoom = v);
+        y = sliderRow(cx, y, cw, "\u6e32\u67d3\u5bc6\u5ea6", 1, 24, ww.pixelPerUnit, false, v -> ww.pixelPerUnit = v);
+        y = sliderRow(cx, y, cw, "\u81ea\u52a8\u5237\u65b0\uff08\u79d2\uff0c0 = \u4e0d\u5237\uff09", 0, 3600,
+                ww.autoRefreshSec, true, v -> ww.autoRefreshSec = (int) Math.round(v));
+        y = sliderRow(cx, y, cw, "\u5bbd\u5ea6", 4, 512, ww.w, true, v -> ww.w = Math.max(2, v));
+        y = sliderRow(cx, y, cw, "\u9ad8\u5ea6", 4, 512, ww.h, true, v -> ww.h = Math.max(2, v));
+        y = sliderRow(cx, y, cw, "\u65cb\u8f6c\u89d2\u5ea6", -180, 180, ww.rot, true, v -> ww.rot = v);
+        y = sliderRow(cx, y, cw, "\u4e0d\u900f\u660e\u5ea6", 0.05, 1.0, ww.alpha, false, v -> ww.alpha = (float) (double) v);
+        y = sliderRow(cx, y, cw, "\u5c42\u7ea7(z)", -20, 40, ww.zOff, true, v -> ww.zOff = v);
+        // 控件底色（与其它控件同一套「0 = 透明」语义）
+        if (y + 22 <= bottomLimit) {
+            button(ww.background == 0 ? "\u5e95\u8272\uff1a\u65e0" : "\u5e95\u8272\uff1a\u6709", cx + 4, y, cw - 8, 18, b -> {
+                ww.background = ww.background == 0 ? 0x80000000 : 0;
+                rebuildWidgets();
+            }).active = canEdit;
+            y += 22;
+        }
+        // ---- 最后两行说明（snapshot-127 用户口径）：世界里**左键**点画面 = 操作页面；
+        //      **右键** = 打开这个编辑器（与其它控件的惯例一致）；
+        //      点进网页的输入框后按 I = 用输入法打字 ----
+        // 放最后是为了不挤掉上面那些要用的按钮/滑块（本文件的老教训：常用功能必须排在上面）；
+        // 文案里**不出现** MCEF / CDP / Chromium 这类词（用户口径：界面不许提后端）。
+        if (y + 12 <= bottomLimit) {
+            textRow(plainLang("projector.msg.web_world_click",
+                    "\u4e16\u754c\u91cc\u5de6\u952e\u70b9\u7f51\u9875\u753b\u9762\uff1d"
+                            + "\u64cd\u4f5c\u9875\u9762\uff08\u70b9\u94fe\u63a5/\u6eda\u52a8\uff09\uff1b"
+                            + "\u53f3\u952e\uff1d\u6253\u5f00\u8fd9\u4e2a\u7f16\u8f91\u5668"), y);
+            y += 12;
+            if (y + 12 <= bottomLimit) {
+                textRow(plainLang("projector.msg.web_world_input",
+                        "\u70b9\u8fdb\u9875\u9762\u91cc\u7684\u8f93\u5165\u6846\u540e\u6309 I\uff1d"
+                                + "\u6253\u5b57\uff08\u652f\u6301\u4e2d\u6587/\u8f93\u5165\u6cd5\uff09\uff1b"
+                                + "\u9000\u683c/\u56de\u8f66/Tab/\u65b9\u5411\u952e\u4f1a\u8f6c\u7ed9\u9875\u9762"), y);
+                y += 12;
+            }
+        }
+        return y;
+    }
+
+    /** 编辑器里按了导航按钮：先本地生效，再发一条给服务端留审计。 */
+    private void webButton(top.hmjmfabc.projector.common.widget.WebWidget ww, int index, String message) {
+        if (!canEdit) {
+            // 自己都改不了内容时，编辑器里的导航按钮只对本机生效也没意义 —— 与其它按钮一致
+            previewMessage = "\u53d7\u4fdd\u62a4\uff0c\u65e0\u6743\u64cd\u4f5c";
+            return;
+        }
+        top.hmjmfabc.projector.client.web.WebControls.navigateByButton(plane, ww, index);
+        previewMessage = message;
+    }
+
+    /**
+     * 提交地址框：回车 / 失去焦点时调用（不这样做的话，Android 触屏上永远等不到回车）。
+     *
+     * <p>非法地址<b>不静默丢弃</b>：留一行红字说明「只支持 http/https」，
+     * 并且不覆盖原来那个还能用的地址。</p>
+     */
+    private void commitWebUrl() {
+        if (webUrlBox == null || !(widget instanceof top.hmjmfabc.projector.common.widget.WebWidget ww)) {
+            return;
+        }
+        if (!canEdit) {
+            return;
+        }
+        String raw = webUrlBox.getValue();
+        String v = raw == null ? "" : raw.trim();
+        if (v.isEmpty()) {
+            // 清空 = 回到空白页（这是合法意图，不是错误）
+            webUrlHint = "";
+            if (!ww.url.isEmpty()) {
+                ww.url = "";
+                navigateWeb(ww, top.hmjmfabc.projector.common.widget.WebWidget.BLANK);
+                previewMessage = "\u5df2\u6e05\u7a7a\u5730\u5740";
+            }
+            return;
+        }
+        if (!top.hmjmfabc.projector.common.widget.WebWidget.acceptable(v)) {
+            webUrlHint = plainLang("projector.msg.web_bad_url",
+                    "\u5730\u5740\u65e0\u6548\uff08\u53ea\u652f\u6301 http/https\uff09");
+            return;
+        }
+        webUrlHint = "";
+        String norm = top.hmjmfabc.projector.common.widget.WebWidget.normalize(v);
+        webUrlBox.setValue(norm);
+        if (!norm.equals(ww.url)) {
+            ww.url = norm;
+            navigateWeb(ww, norm);
+            previewMessage = "\u5df2\u8f6c\u5230 " + ww.displayUrl();
+        }
+    }
+
+    /** 换地址：清掉旧会话 + 叫出按钮栏（让玩家回世界就能看到结果）。 */
+    private void navigateWeb(top.hmjmfabc.projector.common.widget.WebWidget ww, String url) {
+        top.hmjmfabc.projector.client.web.WebSessions.navigate(ww, url);
+        top.hmjmfabc.projector.client.web.WebControls.reveal(ww.id);
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector][\u7f51\u9875] \u63a7\u4ef6 {} \u5730\u5740\u8bbe\u4e3a\uff1a{}",
+                ww.id.toString().substring(0, 8), url);
     }
 
     private static String shorten(String text, int max) {
@@ -1274,6 +1671,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
             case Widget.KIND_LEADERBOARD -> "\u6392\u884c\u699c\u63a7\u4ef6";
             case Widget.KIND_CHESS -> "\u68cb\u7c7b\u6e38\u620f\u63a7\u4ef6";
             case Widget.KIND_MUSIC -> "\u97f3\u4e50\u63a7\u4ef6";
+            case Widget.KIND_WEB -> "\u7f51\u9875\u63a7\u4ef6";
             default -> "\u63a7\u4ef6";
         };
     }

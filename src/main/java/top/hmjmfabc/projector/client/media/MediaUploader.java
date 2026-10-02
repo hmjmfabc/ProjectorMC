@@ -77,7 +77,10 @@ public final class MediaUploader {
         try {
             long size = Files.size(path);
             if (size <= 0) return new Prepared(false, null, 0, "\u6587\u4ef6\u4e3a\u7a7a");
-            long limit = limitFor(video);
+            // 【27.2】音频按视频档：一首 FLAC 十几 MB，走图片那 4 MB 的档会在本地就被拦下
+            boolean audio = !video && top.hmjmfabc.projector.server.Sanitize
+                    .isAudioName(path.getFileName().toString());
+            long limit = limitFor(video || audio);
             if (video) {
                 long block = top.hmjmfabc.projector.client.ClientServerInfo.blockVideoBytes();
                 if (block > 0 && size > block) {
@@ -85,7 +88,8 @@ public final class MediaUploader {
                             + (block / 1024 / 1024) + " MB\uff0c\u4e0d\u5141\u8bb8\u4efb\u4f55\u4eba\u4e0a\u4f20");
                 }
             } else if (size > limit) {
-                return new Prepared(false, null, size, "\u56fe\u7247\u8fc7\u5927\uff08\u4e0a\u9650 "
+                return new Prepared(false, null, size, (audio
+                        ? "\u97f3\u9891\u8fc7\u5927\uff08\u4e0a\u9650 " : "\u56fe\u7247\u8fc7\u5927\uff08\u4e0a\u9650 ")
                         + (limit / 1024 / 1024) + " MB\uff09");
             }
             Path sendPath = path;
@@ -101,20 +105,8 @@ public final class MediaUploader {
                                 .isNativeVideo(path.getFileName().toString())) {
                     useOriginal = true;
                 }
-                if (!useOriginal && auto > 0 && size > auto) {
-                    Path out = VideoShrinker.compressedPath(path);
-                    if (out == null) {
-                        return new Prepared(false, null, size, "\u65e0\u6cd5\u786e\u5b9a\u538b\u7f29\u8f93\u51fa\u8def\u5f84");
-                    }
-                    VideoShrinker.Result r = VideoShrinker.shrink(path, out, auto);
-                    if (!r.ok() || r.output() == null) {
-                        return new Prepared(false, null, size, "\u89c6\u9891\u538b\u7f29\u5931\u8d25\uff1a" + r.message());
-                    }
-                    sendPath = r.output();
-                    size = r.size();
-                    Projector.LOGGER.info("[Projector] 视频已自动压缩：{} -> {} 字节（{}）",
-                            Files.size(path), size, r.message());
-                }
+                // 【27.1.3】内置压缩（MJPEG 复制 / ZIP 重打包）随内置视频后端一起移除：
+                // 视频一律原样上传，播放交给可选前置模组 WaterMedia；超限就按下面的规则拒绝。
             }
             if (size > limit) {
                 return new Prepared(false, null, size, "\u538b\u7f29\u540e\u4ecd\u8d85\u8fc7\u4e0a\u9650 "

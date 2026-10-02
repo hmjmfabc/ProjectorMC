@@ -32,6 +32,29 @@ public final class Sanitize {
 
     /** 归一化并转小写；非法返回 null。 */
     @Nullable
+    /**
+     * 【27.2】这个文件名是不是音频（按扩展名）。
+     *
+     * <p>用途：音频与视频走**同一档上传配额** —— 一首无损 FLAC 十几 MB，
+     * 按图片那 4 MB 的档会直接传不上去。客户端在发送前、服务端在收首片时都要用同一条判据，
+     * 所以放在这个两边都会加载的类里（{@code MusicTrack.AUDIO_EXT} 在 client 侧，
+     * 专用服务端不能引用它）。</p>
+     */
+    public static boolean isAudioName(@Nullable String name) {
+        if (name == null) {
+            return false;
+        }
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) {
+            return false;
+        }
+        String ext = name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        return switch (ext) {
+            case "mp3", "flac", "wav", "m4a", "aac" -> true;
+            default -> false;
+        };
+    }
+
     public static String hash(@Nullable String hash) {
         if (!isHash(hash)) return null;
         return hash.toLowerCase(java.util.Locale.ROOT);

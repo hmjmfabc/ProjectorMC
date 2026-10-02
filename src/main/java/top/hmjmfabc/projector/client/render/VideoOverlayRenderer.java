@@ -37,15 +37,21 @@ public final class VideoOverlayRenderer {
         boolean playing = !w.paused;
 
         // ---- 进度条：与音乐控件的条同一套观感（白色胶囊 + 圆点）----
-        double[] box = w.progressBox();
+        // ⚠ 必须转成**画布坐标**：音乐那套绘制函数内部会做 x - w.x 再旋转
+        //   （音乐自己也是用 offset(w, w.xxxBox()) 传进去的）。少了这一步，
+        //   播放键与进度条会被画到**画布原点**（锚点方块那个角），看着就像「不显示了」。
+        double[] box = offset(w, w.progressBox());
         double barH = Math.max(0.6, box[3] - box[1]);
         double midY = (box[1] + box[3]) / 2.0;
         double x0 = box[0];
         double x1 = box[2];
         MusicWidgetRenderer.roundedRect(collector, layer(ctx, 1), a,
                 x0, midY - barH / 2, x1, midY + barH / 2, barH / 2, 0x8CFFFFFF);
+        // 【27.1.3】直播 / HLS 这类**无限流**没有「总时长」，进度条只画底条；
+        // 普通在线视频就算选了流式播放也是有时长的，照常画进度。
+        final boolean live = top.hmjmfabc.projector.client.media.net.OnlineVideos.live(w);
         // 时长不可靠（外部解码器还没报出真时长）时不画已播放段，免得进度条乱跳
-        if (w.durationKnown()) {
+        if (!live && w.durationKnown()) {
             double f = Math.max(0.0, Math.min(1.0, w.progressFraction(now)));
             double playedX = x0 + (x1 - x0) * f;
             if (playedX > x0 + 0.05) {
@@ -56,12 +62,13 @@ public final class VideoOverlayRenderer {
         }
 
         // ---- 播放键：**与音乐控件逐字相同**的配方（白色细圆环 + 白色图形）----
-        double[] b = w.controlBox();
+        double[] b = offset(w, w.controlBox());
         double size = b[2] - b[0];
         double cx = (b[0] + b[2]) / 2.0;
         double cy = (b[1] + b[3]) / 2.0;
         double radius = size / 2.0;
         double ringWidth = Math.max(0.22, radius * 0.09);
+        reportGeometry(w, b, box);
         MusicWidgetRenderer.ring(collector, layer(ctx, 2), a, cx, cy, radius, ringWidth, WHITE);
 
         if (playing) {
@@ -91,5 +98,45 @@ public final class VideoOverlayRenderer {
         }
         return new PlaneRenderContext(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 ctx.depth() + n * LAYER);
+    }
+
+    /**
+     * 控件局部坐标 → 画布坐标（加上锚点）。
+     *
+     * <p>{@code VideoWidget.controlBox()/progressBox()} 返回的是**相对锚点**的局部坐标，
+     * 而 {@code MusicWidgetRenderer} 的绘制函数要的是**画布坐标**
+     * （它们内部按 {@code x - w.x} 取局部量再旋转）—— 两边差一个锚点偏移，
+     * 少了这个换算就会画到画布原点去。</p>
+     */
+    private static double[] offset(VideoWidget w, double[] local) {
+        return new double[]{w.x + local[0], w.y + local[1], w.x + local[2], w.y + local[3]};
+    }
+
+    /** 每个控件上一次打「浮层几何」的时间（同一控件 2 秒最多一行）。 */
+    private static final java.util.Map<java.util.UUID, Long> LAST_GEOMETRY_MS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 诊断：把浮层的画布几何打一行日志。
+     *
+     * <p>「点了没出现」这种问题必须能一眼分清：是点击没叫出来（没有这一行）、
+     * 还是画出来了但位置不对（这一行里的坐标和控件位置对不上 —— 上一版就是把
+     * 局部坐标当画布坐标用，整块浮层被画到画布原点去了）。</p>
+     */
+    private static void reportGeometry(VideoWidget w, double[] b, double[] box) {
+        if (w == null || w.id == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long last = LAST_GEOMETRY_MS.get(w.id);
+        if (last != null && now - last < 2000L) {
+            return;
+        }
+        LAST_GEOMETRY_MS.put(w.id, now);
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector][视频] 浮层几何: 控件={} 控件x/y={},{} 播放键画布=({},{})-({},{})"
+                        + " 进度条画布=({},{})-({},{}) 时长已知={}",
+                w.id.toString().substring(0, 8), w.x, w.y,
+                b[0], b[1], b[2], b[3], box[0], box[1], box[2], box[3], w.durationKnown());
     }
 }

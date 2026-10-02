@@ -24,6 +24,83 @@ public final class TextRenderer {
     private TextRenderer() {
     }
 
+    // ------------------------------------------------------------------
+    // 【27.2-pre-136】排版缓存（本批「不择手段地优化」里最值钱的一处）
+    // ------------------------------------------------------------------
+
+    /**
+     * 排版结果的缓存上限（条）。
+     *
+     * <p>缓存的是 {@link TextLayout#layoutRuns} 的输出：一段文本的每个字形的墨迹矩形。
+     * 它以前<b>每帧每个控件都要重算一遍</b>——解析格式化代码、逐码点建 Cell、
+     * 逐个查字体度量，全是临时对象（文字/时钟/天气/进度/计时器/排行榜/音乐/棋子全都吃这一笔）。
+     * 文本内容在绝大多数帧里是不变的，所以这里按「字体 + 字号 + 换行宽 + 行距 + 文本」
+     * 做一次 LRU 缓存，命中就是一次哈希查找。</p>
+     *
+     * <p><b>为什么缓存是安全的</b>：{@code layoutRuns} 的几何只取决于
+     * {@code TtfFont.measure(cp)}（由字体文件决定、且它自己也有缓存），
+     * 与字形图集的装载状态无关；UV 是在绘制时（{@code slotOf}）才查的。
+     * 缺字（{@code codePoint == -1} 的占位方块）一律<b>不入缓存</b>：
+     * 那种情况会随时因图集/字体重扫而变化，宁可每帧重算。</p>
+     */
+    private static final int LAYOUT_CACHE_MAX = 64;
+
+    /** 键：字体身份 + 排版参数 + 文本。用 record 而不是拼字符串，省一次分配。 */
+    private record LayoutKey(TtfFont font, double fontSize, double wrapWidth, double lineSpacing,
+                             String text) {
+    }
+
+    private static final java.util.LinkedHashMap<LayoutKey, List<TextLayout.GlyphRun>> LAYOUT_CACHE =
+            new java.util.LinkedHashMap<>(32, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(
+                        java.util.Map.Entry<LayoutKey, List<TextLayout.GlyphRun>> eldest) {
+                    return size() > LAYOUT_CACHE_MAX;
+                }
+            };
+
+    /** 每个字体一个 {@code FontMetrics} 包装（以前每次调用都 new 一个匿名对象）。 */
+    private static final java.util.Map<TtfFont, TextLayout.FontMetrics> METRICS =
+            new java.util.IdentityHashMap<>();
+
+    private static TextLayout.FontMetrics metricsOf(TtfFont font) {
+        TextLayout.FontMetrics m = METRICS.get(font);
+        if (m == null) {
+            m = FontManager.metrics(font);
+            METRICS.put(font, m);
+        }
+        return m;
+    }
+
+    /** 取（必要时计算）这段文本的排版结果；调用方只许读，不许改。 */
+    public static List<TextLayout.GlyphRun> runsFor(TtfFont font, String text, double fontSize,
+                                                    double wrapWidth, double lineSpacing) {
+        LayoutKey key = new LayoutKey(font, fontSize, wrapWidth, lineSpacing, text);
+        List<TextLayout.GlyphRun> hit = LAYOUT_CACHE.get(key);
+        if (hit != null) {
+            return hit;
+        }
+        List<TextLayout.GlyphRun> runs = TextLayout.layoutRuns(text, metricsOf(font),
+                fontSize, wrapWidth, lineSpacing, 0, 0);
+        boolean hasMissing = false;
+        for (TextLayout.GlyphRun g : runs) {
+            if (g.codePoint < 0) {
+                hasMissing = true;
+                break;
+            }
+        }
+        if (!hasMissing) {
+            LAYOUT_CACHE.put(key, runs);
+        }
+        return runs;
+    }
+
+    /** 清空排版缓存（字体重扫 / 图集重建后调用，避免拿着旧度量）。 */
+    public static void clearCache() {
+        LAYOUT_CACHE.clear();
+        METRICS.clear();
+    }
+
     /**
      * 把文本绘制在「控件方框」内：尺寸、对齐、旋转全部以方框为准。
      *
@@ -78,8 +155,7 @@ public final class TextRenderer {
         if (atlas.pageCount() <= 0) {
             return;
         }
-        List<TextLayout.GlyphRun> runs = TextLayout.layoutRuns(text, FontManager.metrics(font),
-                fontSize, wrapWidth, lineSpacing, 0, 0);
+        List<TextLayout.GlyphRun> runs = runsFor(font, text, fontSize, wrapWidth, lineSpacing);
         if (runs.isEmpty()) {
             return;
         }

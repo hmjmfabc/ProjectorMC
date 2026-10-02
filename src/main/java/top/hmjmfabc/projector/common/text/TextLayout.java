@@ -299,6 +299,86 @@ public final class TextLayout {
         double gradT;
     }
 
+    // ------------------------------------------------------------------
+    // 【27.2-pre-136】「打字」动画：按可见字数取前缀
+    // ------------------------------------------------------------------
+
+    /**
+     * 文本里有多少个<b>可见字符</b>（码点）。
+     *
+     * <p>格式化代码（{@code &a} / {@code &#RRGGBB} / {@code &z} / {@code &s..e..}）不算，
+     * {@code &&} 算一个（它渲染出来就是一个 {@code &}）；换行算一个
+     * （打字动画里换行也是一次「敲键」）。</p>
+     */
+    public static int visibleCount(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return 0;
+        }
+        int n = raw.length();
+        int i = 0;
+        int count = 0;
+        while (i < n) {
+            int code = FormatCodes.codeLengthAt(raw, i);
+            if (code > 0) {
+                if (raw.charAt(i + 1) == '&') {
+                    count++;   // && = 一个字面 &
+                }
+                i += code;
+                continue;
+            }
+            int cp = raw.codePointAt(i);
+            i += Character.charCount(cp);
+            count++;
+        }
+        return count;
+    }
+
+    /**
+     * 取「前 {@code visible} 个可见字符」的前缀，<b>格式化代码原样保留、绝不截断到一半</b>。
+     *
+     * <p>打字动画每帧都要调它：里面的字符会一个个冒出来，而颜色/粗体等代码
+     * 必须从一开始就带上——否则「打到第 5 个字时颜色突然变」或者
+     * 半截代码（{@code &#FF}）被当成普通文字画出来。</p>
+     *
+     * <p>码点整取：代理对（emoji）不会被劈成两半。</p>
+     */
+    public static String visiblePrefix(String raw, int visible) {
+        if (raw == null || raw.isEmpty() || visible <= 0) {
+            return "";
+        }
+        int n = raw.length();
+        int i = 0;
+        int used = 0;
+        StringBuilder out = null;
+        while (i < n && used < visible) {
+            int code = FormatCodes.codeLengthAt(raw, i);
+            if (code > 0) {
+                if (raw.charAt(i + 1) == '&') {
+                    // ⚠ 必须原样写回 "&&" 而不是一个 '&'：
+                    // 只写一个 '&' 的话，它后面那个字会被当成格式化代码吃掉
+                    // （"&a" 是绿色！），画出来的文字会缺字、还整段变色。
+                    if (out == null) out = new StringBuilder(n);
+                    out.append("&&");
+                    used++;
+                } else {
+                    if (out == null) out = new StringBuilder(n);
+                    out.append(raw, i, i + code);
+                }
+                i += code;
+                continue;
+            }
+            int cp = raw.codePointAt(i);
+            int step = Character.charCount(cp);
+            if (out == null) out = new StringBuilder(n);
+            out.append(raw, i, i + step);
+            i += step;
+            used++;
+        }
+        // 前面的格式化代码会原样带上（即使一个可见字符都还没打出来）：
+        // 这样「打第一个字」的时候颜色就已经对了，而不是打完才发现颜色变了。
+        return out == null ? "" : out.toString();
+    }
+
     /** 粗略统计行数（用于定位首行基线）。 */
     public static int countLines(String text, double wrapWidth) {
         if (text == null || text.isEmpty()) return 1;

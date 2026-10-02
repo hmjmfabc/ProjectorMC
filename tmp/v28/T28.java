@@ -32,6 +32,7 @@ public class T28 {
         lyricParsing();
         trackParsing();
         distIsolation();
+        localMusicSharing();
         titleTruncation();
         seekResync();
         durationProbe();
@@ -339,14 +340,16 @@ public class T28 {
                 MusicTrack.isAudioFile("a.mp3") && MusicTrack.isAudioFile("b.FLAC")
                 && MusicTrack.isAudioFile("c.wav") && !MusicTrack.isAudioFile("d.mp4")
                 && !MusicTrack.isAudioFile("e.png"));
-        // 【翻车一次换来的断言】AAC/M4A 必须**不在**可播放列表里：它的解码库
-        // javasound-aac 与 JCodec 自带的 net.sourceforge.jaad.* 是同名包，
-        // 两个 jar 一起嵌进模组会让 ModLauncher 在**启动阶段**直接崩：
-        //   ResolutionException: Modules javasound.aac and jcodec export package … to module mp3spi
-        check("AAC/M4A 不在可播放列表里（解码库与 JCodec 包名冲突）",
-                !MusicTrack.isAudioFile("x.m4a") && !MusicTrack.isAudioFile("y.aac"));
-        sourceShouldNotContain("build.gradle", "libs:javasound-aac",
-                "build.gradle 的依赖里不许再出现 javasound-aac（同名包冲突会让启动崩溃）");
+        // 【翻车一次换来的断言，Build 112 起口径反转】AAC/M4A 现在**在**可播放列表里：
+        // 当年禁止它是因为 javasound-aac 与 JCodec 自带的 net.sourceforge.jaad.* 同名包
+        // （两个 jar 一起嵌会让 ModLauncher 启动阶段直接崩：
+        //  ResolutionException: Modules javasound.aac and jcodec export package … to module mp3spi）。
+        // 现在 JCodec 已整个移除，冲突消失，于是 AAC/M4A 加回来 —— **JCodec 变成禁止项**。
+        check("AAC/M4A 在可播放列表里（Build 112 起恢复）",
+                MusicTrack.isAudioFile("x.m4a") && MusicTrack.isAudioFile("y.aac")
+                && MusicTrack.isAudioFile("z.M4A"));
+        sourceShouldNotContain("build.gradle", "jcodec",
+                "build.gradle 的依赖里不许再出现 JCodec（已由 Build 112 移除）");
         check("找不到的本地文件返回 null", MusicTrack.resolveLocal("绝对不存在的文件.mp3") == null);
         check("空的来源算空", MusicTrack.local("", "", 0L).isEmpty());
     }
@@ -553,6 +556,129 @@ public class T28 {
         MusicTrack.applyTo(w, MusicTrack.netease(1L, "t", "a", 1000L));
         check("client 侧入口能写回控件", "NETEASE".equals(w.sourceKind) && "1".equals(w.sourceKey));
         check("client 侧入口能读回歌曲", MusicTrack.of(w).kind() == MusicTrack.Kind.NETEASE);
+    }
+
+    // ------------------------------------------------------------------ 本地音乐共享（27.2）
+
+    /**
+     * 【27.2】玩家报的 Bug：**服务器上其他玩家听不到玩家 A 放置的本地音乐**。
+     *
+     * <p>根因：本地音乐以前只在控件里存一个<b>文件路径</b>，而那份文件只在 A 的机器上。
+     * 修法：选歌时把音频按 SHA-1 发布到服务端，控件存哈希；其他客户端缺这份就下载。
+     * 这一组把「两条半」钉住 —— 配额判据、哈希识别、发布与下载的接线。</p>
+     */
+    private static void localMusicSharing() {
+        // ① 音频按视频那一档配额（否则一首 6 MB 的 MP3 会被 4 MB 的图片档挡在本地）
+        check("音频扩展名判定：mp3/flac/wav/m4a/aac（大小写都认）",
+                top.hmjmfabc.projector.server.Sanitize.isAudioName("a.mp3")
+                        && top.hmjmfabc.projector.server.Sanitize.isAudioName("A.FLAC")
+                        && top.hmjmfabc.projector.server.Sanitize.isAudioName("x.wav")
+                        && top.hmjmfabc.projector.server.Sanitize.isAudioName("x.m4a")
+                        && top.hmjmfabc.projector.server.Sanitize.isAudioName("x.aac"));
+        check("音频扩展名判定：视频/图片/无扩展名/空 一律不是",
+                !top.hmjmfabc.projector.server.Sanitize.isAudioName("a.mp4")
+                        && !top.hmjmfabc.projector.server.Sanitize.isAudioName("a.png")
+                        && !top.hmjmfabc.projector.server.Sanitize.isAudioName("song.")
+                        && !top.hmjmfabc.projector.server.Sanitize.isAudioName("song")
+                        && !top.hmjmfabc.projector.server.Sanitize.isAudioName("")
+                        && !top.hmjmfabc.projector.server.Sanitize.isAudioName(null));
+        check("配额档位：音频走视频档（服务端收首片时用同一条判据）",
+                top.hmjmfabc.projector.network.ServerNetHandler.videoQuota(false, "song.mp3")
+                        && top.hmjmfabc.projector.network.ServerNetHandler.videoQuota(true, "v.mp4")
+                        && !top.hmjmfabc.projector.network.ServerNetHandler.videoQuota(false, "p.png"));
+
+        // ② 真正把「6 MB 的音频」送进上传前检查：按图片档必被拒，按视频档放行
+        java.nio.file.Path big = null;
+        try {
+            java.nio.file.Path dir = java.nio.file.Path.of("tmp/v28");
+            java.nio.file.Files.createDirectories(dir);
+            big = dir.resolve("t28-audio-quota.mp3");
+            byte[] blob = new byte[6 * 1024 * 1024];
+            java.util.Arrays.fill(blob, (byte) 7);
+            java.nio.file.Files.write(big, blob);
+            var audio = top.hmjmfabc.projector.client.media.MediaUploader
+                    .prepare(big, false, false);
+            java.nio.file.Path asImage = dir.resolve("t28-image-quota.png");
+            java.nio.file.Files.write(asImage, blob);
+            var image = top.hmjmfabc.projector.client.media.MediaUploader
+                    .prepare(asImage, false, false);
+            check("同一份 6 MB 数据：音频过（视频档），换成 .png 就被挡（图片档）",
+                    audio.ok() && !image.ok());
+            java.nio.file.Files.deleteIfExists(asImage);
+        } catch (Throwable t) {
+            check("上传前检查的两档配额（音频 6 MB 过 / 图片 6 MB 拒）：" + t, false);
+        } finally {
+            if (big != null) {
+                try {
+                    java.nio.file.Files.deleteIfExists(big);
+                } catch (Throwable ignored) {
+                    // 删不掉不影响断言
+                }
+            }
+        }
+
+        // ③ 哈希 key 与路径 key 必须分得清（旧存档是路径，27.2 起是哈希）
+        String hash = "0123456789abcdef0123456789abcdef01234567";
+        check("哈希 key 认得出来（40 位十六进制）", MusicTrack.isHashKey(hash));
+        check("路径 key 不当成哈希",
+                !MusicTrack.isHashKey("/storage/emulated/0/x.mp3")
+                        && !MusicTrack.isHashKey("songs/x.flac")
+                        && !MusicTrack.isHashKey("")
+                        && !MusicTrack.isHashKey(null)
+                        && !MusicTrack.isHashKey(hash.substring(0, 39)));
+        check("短哈希只取前 8 位（日志用）",
+                MusicTrack.shortHash(hash).equals("01234567")
+                        && MusicTrack.shortHash("abc").equals("abc"));
+
+        // ④ 本机没有这份音频时：**必须抛一条写明原因的 IOException**，不能静默、不能 NPE
+        MusicTrack missing = MusicTrack.local(hash, "t", 0L);
+        String message = "";
+        boolean threw = false;
+        try (var in = missing.openStream()) {
+            threw = false;
+        } catch (java.io.IOException e) {
+            threw = true;
+            message = String.valueOf(e.getMessage());
+        } catch (Throwable t) {
+            message = "非 IOException：" + t;
+        }
+        check("哈希音频不在本机时抛 IOException 且写明「还没下载到本机」",
+                threw && message.contains("\u8fd8\u6ca1\u4e0b\u8f7d\u5230\u672c\u673a"));
+        check("诊断文本里带短哈希（一眼看出是哪一份）", message.contains("01234567"));
+        check("来源描述也区分哈希与路径",
+                new MusicTrack(MusicTrack.Kind.LOCAL, hash, "t", "", 0)
+                        .describeSource().contains("\u670d\u52a1\u7aef\u97f3\u9891"));
+
+        // ⑤ 接线：选歌要发布、听歌要下载（源码级，防「只改了一半」）
+        String picker = read("src/main/java/top/hmjmfabc/projector/client/gui/MusicPickerScreen.java");
+        String share = read("src/main/java/top/hmjmfabc/projector/client/music/MusicShare.java");
+        String manager = read("src/main/java/top/hmjmfabc/projector/client/music/MusicManager.java");
+        String server = read("src/main/java/top/hmjmfabc/projector/network/ServerNetHandler.java");
+        check("选歌界面把本地音频发布到服务端（MusicShare.publish）",
+                picker.contains("MusicShare.publish(file") && picker.contains("isHashKey"));
+        check("发布走的是图片/视频同一条上传管道（MediaUploader.upload，非视频语义）",
+                share.contains("MediaUploader.upload(file, false"));
+        check("发布前先把自己那一份登记进索引（否则连自己也放不了）",
+                share.contains("LocalMedia.registerCache(hash, file)"));
+        check("发布失败必须留痕（WARN 明说「其他玩家听不到这首」）",
+                share.contains("\u5176\u4ed6\u73a9\u5bb6\u542c\u4e0d\u5230\u8fd9\u9996"));
+        check("听歌侧：本机没有就请求下载，且**有退避**（20 Hz 的 tick 不能每 tick 发一次）",
+                manager.contains("ensureAudioReady(music)")
+                        && manager.contains("MediaCache.prefetch(hash, false)")
+                        && manager.contains("AUDIO_RETRY_MS"));
+        check("听歌侧不再「先开流再失败」：起播前先问一句能不能放",
+                manager.contains("ensureAudioReady(music) && at != null"));
+        check("服务端按「视频档」给音频配额（否则 6 MB 的歌传不上去）",
+                server.contains("videoQuota(payload.video(), payload.name())"));
+    }
+
+    private static String read(String path) {
+        try {
+            return java.nio.file.Files.readString(java.nio.file.Path.of(path));
+        } catch (Throwable t) {
+            failed.add("读不到 " + path + "：" + t);
+            return "";
+        }
     }
 
     // ------------------------------------------------------------------ 断言

@@ -30,9 +30,12 @@ public abstract class Widget {
     /** 【27.1.1】音乐控件（本地音频 / 网易云音乐）。 */
     public static final int KIND_MUSIC = 9;
 
+    /** 【27.2】网页控件（可选的客户端前置模组 MCEF 渲染网页）。 */
+    public static final int KIND_WEB = 10;
+
     public static final String[] KIND_IDS = {
             "text", "image", "video", "clock", "weather", "progress", "timer", "leaderboard",
-            "chess", "music"};
+            "chess", "music", "web"};
 
     public UUID id = UUID.randomUUID();
     /** 锚点（左下角）在画布中的坐标。 */
@@ -205,6 +208,7 @@ public abstract class Widget {
             case KIND_LEADERBOARD -> new LeaderboardWidget();
             case KIND_CHESS -> new ChessWidget();
             case KIND_MUSIC -> new MusicWidget();
+            case KIND_WEB -> new WebWidget();
             default -> null;
         };
     }

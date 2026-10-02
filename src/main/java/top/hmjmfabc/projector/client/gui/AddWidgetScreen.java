@@ -18,6 +18,10 @@ import top.hmjmfabc.projector.network.Payloads;
  * （特殊控件包含时钟、天气、百分比进度）。</p>
  */
 public class AddWidgetScreen extends ProjectorScreen {
+    /** 【27.1.3】没装可选前置模组 WaterMedia ⇒ 视频入口不可点，面板里写一行原因。 */
+    private boolean videoMissing;
+    /** 【27.2】没装/没起来可选前置模组 MCEF ⇒ 网页入口不可点，面板里写一行原因。 */
+    private boolean webMissing;
 
     private final Screen parent;
     private final Plane plane;
@@ -35,8 +39,17 @@ public class AddWidgetScreen extends ProjectorScreen {
     protected void init() {
         int w = 200;
         panelW = w;
-        // 特殊控件展开后多了一行（排行榜 / 计时器），面板高度跟着加
-        panelH = specialExpanded ? 244 : 192;
+        // 【27.2】面板高度改成**按行数与提示条数算**：这一版多了一行「新增网页」，
+        // 再写死数字就一定会和底部的「返回」按钮 / 提示文字叠在一起
+        // （本项目的老教训：控件重叠 ⇒ 先加的吃掉后加的点击）。
+        final boolean incomplete = plane.isIncomplete();
+        final boolean videoOk = top.hmjmfabc.projector.client.media.wm.WaterMediaBridge.available();
+        final boolean webOk = webAvailable();
+        this.videoMissing = !videoOk;
+        this.webMissing = !webOk;
+        int rows = 5 + (specialExpanded ? 3 : 1);
+        int hints = (incomplete ? 1 : 0) + (videoMissing ? 1 : 0) + (webMissing ? 1 : 0);
+        panelH = 22 + rows * 24 + 6 + 26 + hints * 14 + 4;
         panelX = (this.width - w) / 2;
         panelY = Math.max(4, (this.height - panelH) / 2);
         int x = panelX;
@@ -45,16 +58,23 @@ public class AddWidgetScreen extends ProjectorScreen {
         button("\u65b0\u589e\u6587\u672c", x + 12, y, w - 24, 20, b -> add(Widget.KIND_TEXT));
         y += 24;
 
-        boolean incomplete = plane.isIncomplete();
         var mediaBtn = button("\u65b0\u589e\u56fe\u7247", x + 12, y, w - 24, 20, b -> add(Widget.KIND_IMAGE));
         mediaBtn.active = !incomplete;
         y += 24;
+        // 【27.1.3】视频依赖**可选前置模组 WaterMedia**（内置解码已移除）：
+        // 没装就整条入口不可点，并在面板底部写明原因 —— 别让玩家点了却什么都不发生。
         var videoBtn = button("\u65b0\u589e\u89c6\u9891", x + 12, y, w - 24, 20, b -> add(Widget.KIND_VIDEO));
-        videoBtn.active = !incomplete;
+        videoBtn.active = !incomplete && videoOk;
         y += 24;
         // 【27.1.1】音乐控件与文本/图片/视频并列（它不是「特殊控件」）
         var musicBtn = button("\u65b0\u589e\u97f3\u4e50", x + 12, y, w - 24, 20, b -> add(Widget.KIND_MUSIC));
         musicBtn.active = !incomplete;
+        y += 24;
+        // 【27.2】网页控件依赖**可选前置模组 MCEF**：没装（或没初始化起来）就整条入口不可点，
+        // 并在面板底部写明原因 —— 与「新增视频」那一套完全一致，
+        // 别让玩家点了却什么都不发生，也别让他以为是自己操作错了。
+        var webBtn = button("\u65b0\u589e\u7f51\u9875", x + 12, y, w - 24, 20, b -> add(Widget.KIND_WEB));
+        webBtn.active = !incomplete && webOk;
         y += 24;
 
         if (specialExpanded) {
@@ -85,6 +105,23 @@ public class AddWidgetScreen extends ProjectorScreen {
         }
         button("\u8fd4\u56de", x + 12, panelY + panelH - 26, w - 24, 20,
                 b -> Minecraft.getInstance().setScreen(parent));
+    }
+
+    /**
+     * 网页功能能不能用：可选前置模组 MCEF 是否已加载并初始化完成。
+     *
+     * <p>必须用 {@code catch (Throwable)}：安卓上原生库加载失败抛的是
+     * {@code UnsatisfiedLinkError} / {@code LinkageError}（都是 {@code Error} 而不是
+     * {@code Exception}），只 catch Exception 会让整个「新增控件」界面直接崩掉。</p>
+     */
+    private static boolean webAvailable() {
+        try {
+            return top.hmjmfabc.projector.client.web.McefBridge.available();
+        } catch (Throwable t) {
+            top.hmjmfabc.projector.Projector.LOGGER.warn(
+                    "[Projector][\u7f51\u9875] \u7f51\u9875\u529f\u80fd\u53ef\u7528\u6027\u68c0\u67e5\u5931\u8d25\uff08\u6309\u4e0d\u53ef\u7528\u5904\u7406\uff09", t);
+            return false;
+        }
     }
 
     private void add(int kind) {
@@ -164,9 +201,23 @@ public class AddWidgetScreen extends ProjectorScreen {
         panel(gfx, panelX, panelY, panelW, panelH);
         super.render(gfx, mouseX, mouseY, partialTick);
         centeredLabel(gfx, "\u65b0\u589e\u63a7\u4ef6", panelX + panelW / 2, panelY + 8, TEXT_ACCENT);
+        // 提示文字从「返回」按钮上方往上堆：面板高度在 init() 里已按提示条数算过，
+        // 所以条数变了也不会压住按钮（以前是写死 -44 / -30 两个位置）。
+        int hy = panelY + panelH - 40;
         if (plane.isIncomplete()) {
             centeredLabel(gfx, "\u4e0d\u5b8c\u6574\u5e73\u9762\u4ec5\u652f\u6301\u7eaf\u6587\u672c",
-                    panelX + panelW / 2, panelY + panelH - 44, 0xFFFFAA55);
+                    panelX + panelW / 2, hy, 0xFFFFAA55);
+            hy -= 14;
+        }
+        if (videoMissing) {
+            centeredLabel(gfx, "\u672a\u5b89\u88c5 WATERMeDIA \u6a21\u7ec4\uff0c\u8bf7\u5b89\u88c5\u4ee5\u542f\u7528\u89c6\u9891\u529f\u80fd",
+                    panelX + panelW / 2, hy, 0xFFFFAA55);
+            hy -= 14;
+        }
+        if (webMissing) {
+            centeredLabel(gfx, plainLang("projector.msg.web_no_mcef",
+                            "\u672a\u5b89\u88c5\u6216\u672a\u80fd\u542f\u52a8 MCEF \u6a21\u7ec4\uff0c\u7f51\u9875\u529f\u80fd\u4e0d\u53ef\u7528"),
+                    panelX + panelW / 2, hy, 0xFFFFAA55);
         }
     }
 

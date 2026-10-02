@@ -331,12 +331,12 @@ public class T29 {
     private static void blurredBoundary() {
         String picker = readFile("src/main/java/top/hmjmfabc/projector/client/gui/MediaPickerScreen.java");
         String editor = readFile("src/main/java/top/hmjmfabc/projector/client/gui/WidgetEditorScreen.java");
-        String convert = readFile("src/main/java/top/hmjmfabc/projector/client/gui/ConvertScreen.java");
         String uploader = readFile("src/main/java/top/hmjmfabc/projector/client/media/MediaUploader.java");
 
         check("界面里不再出现 WaterMedia 字样（选择器）", !picker.contains("WaterMedia"));
         check("界面里不再出现 WaterMedia 字样（编辑器）", !editor.contains("WaterMedia"));
-        check("界面里不再出现 WaterMedia 字样（转换器）", !convert.contains("WaterMedia"));
+        check("转换界面（ConvertScreen）已随内置解码器一起删除",
+                !new java.io.File("src/main/java/top/hmjmfabc/projector/client/gui/ConvertScreen.java").exists());
         check("编辑器不再提供「后端」选择按钮", !editor.contains("\u540e\u7aef\uff1a"));
         check("不再有「仅支持 MJPEG 或 ZIP 帧序列」这类格式限制文案",
                 !picker.contains("MJPEG \u6216 ZIP") && !uploader.contains("MJPEG \u6216 ZIP")
@@ -546,6 +546,55 @@ public class T29 {
                 input.contains("event.isAttack()") && input.contains("handleVideoControl"));
         check("视频浮层由渲染器画出", renderer.contains("VideoOverlayRenderer.draw"));
         String overlay = readFile("src/main/java/top/hmjmfabc/projector/client/render/VideoOverlayRenderer.java");
+        check("浮层几何用**画布坐标**（少加锚点偏移 ⇒ 播放键被画到画布原点 = 「不显示了」）",
+                overlay.contains("offset(w, w.controlBox())")
+                        && overlay.contains("offset(w, w.progressBox())"));
+        // 【27.1.3】直播/HLS 是无限流：没有总时长，画已播放段就会「乱跳」
+        check("直播不画已播放段（只留底条）",
+                overlay.contains("final boolean live") && overlay.contains("if (!live && w.durationKnown())"));
+        // 联网失败也要可诊断：把 B 站接口自己的 code/message 带出来
+        String resolver = readFile(
+                "src/main/java/top/hmjmfabc/projector/client/media/net/OnlineVideoResolver.java");
+        check("接口 code!=0 时带上 message 与提示（会员/失效/风控分得清）",
+                resolver.contains("requireOk(") && resolver.contains("code=\" + code")
+                        && resolver.contains("online.bilibiliCookie"));
+        // ---- 27.1.3：按需加载（点了播放才下载）+ 缓存优先清视频 + 在线流式开关 ----
+        String controls = readFile("src/main/java/top/hmjmfabc/projector/client/media/VideoControls.java");
+        String prefetcher = readFile("src/main/java/top/hmjmfabc/projector/client/media/CachePrefetcher.java");
+        String cleaner = readFile("src/main/java/top/hmjmfabc/projector/client/media/CacheCleaner.java");
+        String widget = readFile("src/main/java/top/hmjmfabc/projector/common/widget/VideoWidget.java");
+        String online = readFile("src/main/java/top/hmjmfabc/projector/client/media/net/OnlineVideos.java");
+        check("下载前必须过「玩家点过播放」这道门（渲染路径自己查）",
+                renderer.contains("VideoControls.requested(w)") && controls.contains("public static void request(")
+                        && input.contains("VideoControls.request("));
+        check("编辑器里点播放也算「我要看」",
+                editor.contains("VideoControls.request(vw.id)"));
+        check("预取不再碰视频（视频一律按需）",
+                prefetcher.contains("if (m.video()) continue;"));
+        check("清缓存**先视频后图片**（正在用的不删、半成品有宽限期）",
+                cleaner.contains("videos.sort(") && cleaner.indexOf("videos.sort(") < cleaner.indexOf("images.sort(")
+                        && cleaner.contains("inUseHashes()") && cleaner.contains("PART_GRACE_MS"));
+        check("在线源默认流式（编辑器开关，关掉才整段下载）",
+                widget.contains("public boolean streamOnline = true")
+                        && online.contains("request(w.sourceUrl, !willStream(w))")
+                        && editor.contains("vw.streamOnline = !vw.streamOnline"));
+        check("环境拉不了流时自动退回下载（否则永远放不出来）",
+                online.contains("w.streamOnline && canStream()"));
+        check("进度条只对**无限流**（直播/HLS）不画已播放段",
+                overlay.contains("OnlineVideos.live(w)"));
+        // ---- 27.1.3 B 站视频「能下载但放不了」的两个根因 ----
+        String localmedia = readFile("src/main/java/top/hmjmfabc/projector/client/media/LocalMedia.java");
+        String wm = readFile("src/main/java/top/hmjmfabc/projector/client/media/wm/WaterMediaVideos.java");
+        String cache = readFile("src/main/java/top/hmjmfabc/projector/client/media/net/OnlineVideoCache.java");
+        check("**重扫不许冲掉外部登记的文件**（在线视频在 cache/online/ 下，重扫看不见它）",
+                localmedia.contains("private static final Map<String, MediaFile> REGISTERED")
+                        && localmedia.contains("BY_SHA1.containsKey(hash) || REGISTERED.containsKey(hash)")
+                        && localmedia.contains("MediaFile reg = REGISTERED.get(hash)"));
+        check("播放端直接问在线目录要文件（哈希 → 路径的兜底入口）",
+                wm.contains("OnlineVideoCache.fileForId(hash)") && cache.contains("public static Path fileForId("));
+        check("流式起不来要能自动退回下载（别一直卡占位）",
+                wm.contains("STREAM_READY_TIMEOUT_MS") && online.contains("noteStreamFailed")
+                        && cache.contains("public static void forceDownload("));
         check("播放键**直接调用音乐的绘制函数**（逐像素一样，不再是自画的一套）",
                 overlay.contains("MusicWidgetRenderer.ring(")
                         && overlay.contains("MusicWidgetRenderer.roundedRect(")
@@ -665,6 +714,24 @@ public class T29 {
                 server.contains("PlaneDistance.withinRange"));
         check("每秒结算挂在服务端 tick 上", events.contains("ServerNetHandler.tickSubscriptions"));
         check("登出清订阅表", events.contains("forgetSubscriptions"));
+
+        // ---- 源码级：安卓缺 WATERMeDIA: Android Bridge 时要在日志最前面警告（27.1.3）----
+        String main = readFile("src/main/java/top/hmjmfabc/projector/Projector.java");
+        check("主类里写了安卓视频链路检测", main.contains("watermedia_android_bridge"));
+        check("检测挂在构造期第一步（日志最前面）",
+                main.indexOf("warnIfAndroidVideoStackIncomplete();")
+                        < main.indexOf("\u6295\u5f71\u4eea\u5df2\u88c5\u8f7d"));
+        check("装了 bridge 就不再警告（三件套齐全=正常）",
+                main.contains("isModLoaded(ANDROID_BRIDGE_MODID)) return;"));
+        check("认安卓有五条判据（Build/环境变量/启动器/Dalvik/build.prop）",
+                main.contains("android.os.Build") && main.contains("ANDROID_ROOT")
+                        && main.contains("POJAV_NATIVEDIR") && main.contains("dalvik")
+                        && main.contains("/system/build.prop"));
+        check("检测异常一律吞掉，不影响启动",
+                main.contains("private static void warnIfAndroidVideoStackIncomplete()")
+                        && main.contains("catch (Throwable t) {\n            // \u7eaf\u63d0\u793a\u903b\u8f91"));
+        check("警告文案指明了要装哪个模组",
+                main.contains("WATERMeDIA: Android Bridge"));
     }
 
     private static String readFile(String path) {

@@ -60,10 +60,10 @@ public final class MusicWidgetRenderer {
                     QuadCollector.withAlpha(w.background, w.alpha));
         }
 
-        // ② 圆角边框
+        // ② 圆角边框（【27.2-pre-136】颜色独立：调色盘可以只改边框，不动文字/进度色）
         double border = Math.max(0.45, Math.min(w.h * 0.055, 1.0));
         roundedRing(collector, borderCtx, w, x0, y0, x1, y1, corner, border,
-                QuadCollector.withAlpha(w.textColor, w.alpha));
+                QuadCollector.withAlpha(w.borderColor, w.alpha));
 
         // ③ 播放键
         drawButton(collector, btnCtx, w, gameTime);
@@ -188,7 +188,73 @@ public final class MusicWidgetRenderer {
         if (font == null || text == null || text.isEmpty() || maxWidth <= 0) {
             return text == null ? "" : text;
         }
+        // 【27.2-pre-136】快路径：**一次**排版 + 一次遍历定位截断点。
+        // 以前走 truncate()，它对每个候选串都调一次 measure() ⇒ 一个字一个字地量，
+        // 30 个字就是 30 次排版（每帧！）。排版结果现在有缓存，但 30 次查表也比 1 次贵。
+        if (text.indexOf('\n') < 0) {
+            String fast = truncateByRuns(font, text, fontSize, maxWidth);
+            if (fast != null) {
+                return fast;
+            }
+        }
         return truncate(text, maxWidth, s -> measure(font, s, fontSize));
+    }
+
+    /**
+     * 用一次排版结果求出「前 n 个字 + 省略号」。
+     *
+     * <p>排版出来的每个字形都带着自己的墨迹矩形，所以「前 n 个字形有多宽」
+     * 就是第 n 个字形的右边缘 —— 不需要把每个候选串都重新排一遍。
+     * 截断按<b>可见字符</b>数走（{@code TextLayout.visiblePrefix}），
+     * 因此格式化代码既不算字数、也不会被截成半截。</p>
+     *
+     * @return 结果；无法处理时返回 null（调用方回落到逐个候选的慢路径）
+     */
+    private static String truncateByRuns(TtfFont font, String text, double fontSize, double maxWidth) {
+        try {
+            java.util.List<TextLayout.GlyphRun> runs = TextRenderer.runsFor(font, text, fontSize, -1, 1.0);
+            if (runs.isEmpty()) {
+                return text;
+            }
+            double minX = runs.get(0).x0;
+            double maxX = runs.get(0).x1;
+            for (TextLayout.GlyphRun g : runs) {
+                maxX = Math.max(maxX, g.x1);
+            }
+            if (maxX - minX <= maxWidth) {
+                return text;
+            }
+            String ellipsis = "\u2026";
+            java.util.List<TextLayout.GlyphRun> dot = TextRenderer.runsFor(font, ellipsis, fontSize, -1, 1.0);
+            double dotW = 0;
+            if (!dot.isEmpty()) {
+                double dMin = dot.get(0).x0;
+                double dMax = dot.get(0).x1;
+                for (TextLayout.GlyphRun g : dot) {
+                    dMin = Math.min(dMin, g.x0);
+                    dMax = Math.max(dMax, g.x1);
+                }
+                dotW = dMax - dMin;
+            }
+            double limit = maxWidth - dotW;
+            int fit = 0;
+            for (int i = 0; i < runs.size(); i++) {
+                if (runs.get(i).x1 - minX <= limit) {
+                    fit = i + 1;
+                } else {
+                    break;
+                }
+            }
+            if (fit <= 0) {
+                return ellipsis;
+            }
+            if (fit >= runs.size()) {
+                return text;
+            }
+            return TextLayout.visiblePrefix(text, fit) + ellipsis;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /**
@@ -260,16 +326,26 @@ public final class MusicWidgetRenderer {
         return title;
     }
 
-    /** 毫秒 → {@code m:ss}（超过一小时用 {@code h:mm:ss}）。 */
+    /**
+     * 毫秒 → {@code m:ss}（超过一小时用 {@code h:mm:ss}）。
+     *
+     * <p>【27.2-pre-136】不再用 {@code String.format}：它每帧都要为「进度/时长」各算一次，
+     * 而格式化字符串在 Java 里很慢（要解析格式 + 建 Formatter）。手写补零等价且便宜得多。</p>
+     */
     public static String formatTime(long ms) {
         long total = Math.max(0L, ms) / 1000L;
         long seconds = total % 60L;
         long minutes = (total / 60L) % 60L;
         long hours = total / 3600L;
         if (hours > 0) {
-            return String.format(java.util.Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds);
+            return hours + ":" + two(minutes) + ":" + two(seconds);
         }
-        return String.format(java.util.Locale.ROOT, "%d:%02d", minutes, seconds);
+        return minutes + ":" + two(seconds);
+    }
+
+    /** 两位补零（{@code %02d} 的手写版）。 */
+    private static String two(long v) {
+        return v < 10 ? "0" + v : Long.toString(v);
     }
 
     // ------------------------------------------------------------------ 几何工具

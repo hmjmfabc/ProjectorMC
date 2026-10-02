@@ -57,6 +57,13 @@ public class MusicWidget extends Widget {
     public int accentColor = 0xFF4FC3F7;
     /** 文字颜色。 */
     public int textColor = 0xFFFFFFFF;
+    /**
+     * 【27.2-pre-136】边框颜色（用户要求「音乐控件支持边框调色」）。
+     *
+     * <p>以前边框直接借用 {@link #textColor}，所以「文字改红、边框跟着变红」。
+     * 现在边框有独立的颜色，默认白色（与播放键圆环一致）。</p>
+     */
+    public int borderColor = 0xFFFFFFFF;
     /** 波形未播放部分的颜色。 */
     public int waveColor = 0xFF5A6472;
     /** 是否在有歌词时显示歌词（否则一直显示歌名）。 */
@@ -96,6 +103,7 @@ public class MusicWidget extends Widget {
         t.putDouble("corner", corner);
         t.putInt("accent", accentColor);
         t.putInt("textColor", textColor);
+        t.putInt("borderColor", borderColor);
         t.putInt("wave", waveColor);
         t.putBoolean("lyric", showLyric);
         t.putInt("bars", barCount);
@@ -117,6 +125,8 @@ public class MusicWidget extends Widget {
         corner = t.contains("corner") ? t.getDouble("corner") : 5;
         accentColor = t.contains("accent") ? t.getInt("accent") : 0xFF4FC3F7;
         textColor = t.contains("textColor") ? t.getInt("textColor") : 0xFFFFFFFF;
+        // 旧存档没有边框色 -> 跟随文字色，观感与以前完全一致
+        borderColor = t.contains("borderColor") ? t.getInt("borderColor") : textColor;
         waveColor = t.contains("wave") ? t.getInt("wave") : 0xFF5A6472;
         showLyric = !t.contains("lyric") || t.getBoolean("lyric");
         barCount = t.getInt("bars");

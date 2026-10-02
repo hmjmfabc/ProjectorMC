@@ -82,14 +82,15 @@ public final class CachePrefetcher {
         boolean withVideo = (tier == 2);
         int queued = 0;
         for (ClientServerInfo.Media m : ClientServerInfo.media().values()) {
-            if (m.video() && !withVideo) continue;
+            // 【27.1.3】视频一律**按需**（用户要求：点了播放才下载）——预取只做图片。
+            if (m.video()) continue;
             if (MediaCache.isLocallyAvailable(m.hash())) continue;
             QUEUE.add(new String[]{m.hash(), m.video() ? "1" : "0"});
             queued++;
         }
         total = queued;
-        Projector.LOGGER.info("[Projector] 缓存档位={}（含视频={}）：需要预缓存 {} 份媒体",
-                tierName(tier), withVideo, queued);
+        Projector.LOGGER.info("[Projector] 缓存档位={}（视频按需，不预取）：需要预缓存 {} 份媒体",
+                tierName(tier), queued);
         if (queued == 0) {
             return;
         }

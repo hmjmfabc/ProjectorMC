@@ -167,16 +167,15 @@ public class SequenceEditorScreen extends ProjectorScreen {
             SequenceClip c = selectedClip;
             labelRow("\u5165\u573a\u52a8\u753b\uff1a" + SequenceAnim.animName(c.inAnim), y);
             y += 14;
-            button("\u5207\u6362\u5165\u573a\u52a8\u753b", px + 4, y, leftW - 8, 18, b -> {
-                c.inAnim = (c.inAnim + 1) % SequenceAnim.ANIM_NAMES.length;
-                c.sanitize();
-                submitClip(c);
-                rebuildWidgets();
-            }).active = canEdit;
+            // 【27.2-pre-136】不再「切换」着一个一个轮：打开二级界面，列全所有动画并逐个预览
+            button("\u9009\u62e9\u52a8\u753b\u2026", px + 4, y, leftW - 8, 18, b ->
+                    Minecraft.getInstance().setScreen(new SequenceAnimPickerScreen(this,
+                    SequenceAnimPickerScreen.MODE_IN, c.inAnim,
+                    id -> pickAnim(c, SequenceAnimPickerScreen.MODE_IN, id)))).active = canEdit;
             y += 22;
             y = sliderRow(px, y, leftW, "\u5165\u573a\u65f6\u957f(\u79d2)", 0, Math.max(0.01, c.duration()),
                     c.inDur, false, v -> c.inDur = v, () -> submitClip(c));
-            if (c.inAnim == SequenceAnim.ANIM_SLIDE) {
+            if (SequenceAnim.usesSlideAngle(c.inAnim)) {
                 button("\u6ed1\u52a8\u65b9\u5411\uff1a" + slideName(c.slideAngle), px + 4, y, leftW - 8, 18, b -> {
                     c.slideAngle = (c.slideAngle + 90) % 360;
                     submitClip(c);
@@ -184,28 +183,28 @@ public class SequenceEditorScreen extends ProjectorScreen {
                 }).active = canEdit;
                 y += 22;
             }
-            labelRow("\u51fa\u573a\u52a8\u753b\uff1a" + SequenceAnim.animName(c.outAnim)
+            // 【27.2-pre-138】出场用 outAnimName：编号 4 出场叫「上升」（入场才叫「下落」）
+            labelRow("\u51fa\u573a\u52a8\u753b\uff1a" + SequenceAnim.outAnimName(c.outAnim)
                     + (isLastClip(c) ? "\uff08\u672b\u4f4d\u7247\u6bb5\u4e0d\u51fa\u573a\uff09" : ""), y);
             y += 14;
-            button("\u5207\u6362\u51fa\u573a\u52a8\u753b", px + 4, y, leftW - 8, 18, b -> {
-                c.outAnim = (c.outAnim + 1) % SequenceAnim.ANIM_NAMES.length;
-                c.sanitize();
-                submitClip(c);
-                rebuildWidgets();
-            }).active = canEdit;
+            button("\u9009\u62e9\u52a8\u753b\u2026", px + 4, y, leftW - 8, 18, b ->
+                    Minecraft.getInstance().setScreen(new SequenceAnimPickerScreen(this,
+                    SequenceAnimPickerScreen.MODE_OUT, c.outAnim,
+                    id -> pickAnim(c, SequenceAnimPickerScreen.MODE_OUT, id)))).active = canEdit;
             y += 22;
             y = sliderRow(px, y, leftW, "\u51fa\u573a\u65f6\u957f(\u79d2)", 0, Math.max(0.01, c.duration()),
                     c.outDur, false, v -> c.outDur = v, () -> submitClip(c));
             labelRow("\u5faa\u73af\u52a8\u753b\uff1a" + SequenceAnim.loopName(c.loopAnim), y);
             y += 14;
-            button("\u5207\u6362\u5faa\u73af\u52a8\u753b", px + 4, y, leftW - 8, 18, b -> {
-                c.loopAnim = (c.loopAnim + 1) % SequenceAnim.LOOP_NAMES.length;
-                submitClip(c);
-                rebuildWidgets();
-            }).active = canEdit;
+            button("\u9009\u62e9\u52a8\u753b\u2026", px + 4, y, leftW - 8, 18, b ->
+                    Minecraft.getInstance().setScreen(new SequenceAnimPickerScreen(this,
+                    SequenceAnimPickerScreen.MODE_LOOP, c.loopAnim,
+                    id -> pickAnim(c, SequenceAnimPickerScreen.MODE_LOOP, id)))).active = canEdit;
             y += 22;
             if (c.loopAnim != SequenceAnim.LOOP_NONE) {
-                y = sliderRow(px, y, leftW, "\u5faa\u73af\u5e45\u5ea6", 0, c.loopAnim == SequenceAnim.LOOP_PULSE ? 50 : 60,
+                y = sliderRow(px, y, leftW, "\u5faa\u73af\u5e45\u5ea6", 0,
+                        c.loopAnim == SequenceAnim.LOOP_BLINK ? 100
+                                : (c.loopAnim == SequenceAnim.LOOP_PULSE ? 50 : 60),
                         c.loopAmp, false, v -> c.loopAmp = v, () -> submitClip(c));
                 y = sliderRow(px, y, leftW, "\u5faa\u73af\u901f\u5ea6(Hz)", 0.05, 3.0, c.loopSpeed, false,
                         v -> c.loopSpeed = v, () -> submitClip(c));
@@ -439,6 +438,27 @@ public class SequenceEditorScreen extends ProjectorScreen {
     private void submitClip(SequenceClip clip) {
         if (clip != null) clip.sanitize();
         sendSeqSet();
+    }
+
+    /**
+     * 【27.2-pre-136】动画选择界面选完之后落地：写进片段 → 夹范围 → 提交 → 回到流程编辑器。
+     *
+     * <p>三个平级的入口（入场 / 出场 / 循环）共用这一个方法，靠 {@code mode} 区分，
+     * 免得三处各写一遍「赋值 + sanitize + 提交」——那种写法迟早有一处漏掉 {@code sanitize}，
+     * 于是新加的动画编号被夹掉、界面看着选了却没生效。</p>
+     */
+    private void pickAnim(SequenceClip c, int mode, int id) {
+        if (c == null) return;
+        if (mode == SequenceAnimPickerScreen.MODE_LOOP) {
+            c.loopAnim = SequenceClip.validLoop(id);
+        } else if (mode == SequenceAnimPickerScreen.MODE_OUT) {
+            c.outAnim = SequenceClip.validAnim(id);
+        } else {
+            c.inAnim = SequenceClip.validAnim(id);
+        }
+        submitClip(c);
+        hint = "\u5df2\u9009\u62e9\u52a8\u753b";
+        rebuildWidgets();
     }
 
     /** 上一次发送 seqSet 的时间；滑块拖动时限流用。 */

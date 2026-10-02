@@ -31,6 +31,8 @@ public final class WaterMediaVideos {
     public static final long SEEK_TOLERANCE_MS = 1500L;
     /** 连续失败几次就不再尝试 WaterMedia（避免对着一个坏文件反复重开）。 */
     private static final int MAX_FAILURES = 2;
+    /** 【27.1.3】流式多久还没起播就改走下载（毫秒）。 */
+    private static final long STREAM_READY_TIMEOUT_MS = 12_000L;
 
     private static final Map<UUID, Entry> SESSIONS = new ConcurrentHashMap<>();
     private static final Set<UUID> DISABLED = ConcurrentHashMap.newKeySet();
@@ -40,6 +42,8 @@ public final class WaterMediaVideos {
         volatile boolean loading;
         volatile int failures;
         volatile long lastLogMs;
+        /** 【27.1.3】这次会话是「流式」时记下的开始时刻（0 = 不是流式）。 */
+        volatile long streamStartedMs;
 
         /** 上次报告「本地还没有这份媒体」的时间（节流，别每帧刷屏）。 */
         volatile long lastMissMs;
@@ -61,7 +65,13 @@ public final class WaterMediaVideos {
         }
         // 自动：常见的本地视频格式（mp4/webm/mkv…）只有 WaterMedia 放得了；
         // mjpg/zip 是我们自己的格式，内置后端更省事（不用惊动别的模组）。
-        return WaterMediaBridge.isNativeVideo(w.mediaName);
+        // 【27.1.3】在线源：文件名从 OnlineVideos 一个入口问（解析完扩展名才是准的）
+        // 【27.1.3】无限流（直播/HLS）只能交给它拉流 —— 我们的内置后端只吃本地 MJPEG/ZIP
+        if (top.hmjmfabc.projector.client.media.net.OnlineVideos.streaming(w)) {
+            return true;
+        }
+        return WaterMediaBridge.isNativeVideo(
+                top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaName(w));
     }
 
     /**
@@ -72,7 +82,7 @@ public final class WaterMediaVideos {
      */
     public static ResourceLocation textureFor(VideoWidget w) {
         WaterMediaBridge.noteRenderThread(Thread.currentThread());   // 渲染线程在这里
-        if (w == null || w.mediaId == null || w.mediaId.isEmpty()) {
+        if (w == null || top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaId(w).isEmpty()) {
             return null;
         }
         Entry entry = SESSIONS.computeIfAbsent(w.id, id -> new Entry());
@@ -86,6 +96,22 @@ public final class WaterMediaVideos {
         if (!session.ready()) {
             // 还在连源/建解码器：让它先跑起来（start 只需调一次）
             session.start();
+            // 【27.1.3】流式要解码器直接拉远程地址，有的环境/格式就是拉不动 ——
+            // 超时就退回「先下载再播」，别一直卡在占位上（用户实测：流式播放没有用）。
+            if (entry.streamStartedMs > 0
+                    && System.currentTimeMillis() - entry.streamStartedMs > STREAM_READY_TIMEOUT_MS) {
+                Projector.LOGGER.warn("[Projector][在线视频] 流式 {}ms 还没起播（{}），改走下载",
+                        STREAM_READY_TIMEOUT_MS,
+                        top.hmjmfabc.projector.client.media.net.OnlineVideos.streamUrl(w));
+                entry.streamStartedMs = 0L;
+                try {
+                    session.release();
+                } catch (Throwable ignored) {
+                    // 释放失败无所谓，反正不用它了
+                }
+                entry.session = null;
+                top.hmjmfabc.projector.client.media.net.OnlineVideos.noteStreamFailed(w);
+            }
             return null;
         }
         session.preRender();         // v2：把解码好的这一帧传到它的 GL 纹理（必须渲染线程）
@@ -98,7 +124,8 @@ public final class WaterMediaVideos {
                 w.mediaDurationMs = dur;
                 if (entry.lastLogMs == 0L || System.currentTimeMillis() - entry.lastLogMs > 3000L) {
                     entry.lastLogMs = System.currentTimeMillis();
-                    Projector.LOGGER.info("[Projector][视频] 读到真实时长 {}ms（{}）", dur, w.mediaName);
+                    Projector.LOGGER.info("[Projector][视频] 读到真实时长 {}ms（{}）", dur,
+                            top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaName(w));
                 }
             }
             long pos = session.timeMs();
@@ -160,13 +187,20 @@ public final class WaterMediaVideos {
 
     private static void startAsync(VideoWidget w, Entry entry) {
         entry.loading = true;
-        final String hash = w.mediaId;
-        final String name = w.mediaName;
+        final String hash = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaId(w);
+        final String name = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaName(w);
         final boolean loop = w.loop;
         Thread worker = new Thread(() -> {
             WaterMediaBridge.Session session = null;
             boolean hadFile = false;
             try {
+                // 【27.1.3】无限流（直播/HLS）：没有本地文件可开，直接把地址交给它拉流
+                final String streamUrl = top.hmjmfabc.projector.client.media.net.OnlineVideos.streamUrl(w);
+                if (!streamUrl.isEmpty()) {
+                    hadFile = true;                 // 有地址却打不开才算失败
+                    entry.streamStartedMs = System.currentTimeMillis();
+                    session = WaterMediaBridge.openRemote(streamUrl, loop);
+                } else {
                 Path file = playablePath(hash, name);
                 if (file == null) {
                     // 本地还没这份文件（多人游戏里第一次看到这个控件）：
@@ -175,12 +209,18 @@ public final class WaterMediaVideos {
                     long now = System.currentTimeMillis();
                     if (now - entry.lastMissMs > 2000L) {
                         entry.lastMissMs = now;
-                        Projector.LOGGER.info("[Projector][视频] 本地还没有这份媒体（{}），已在请求整段下载", name);
-                        MediaCache.prefetch(hash, true);
+                        if (top.hmjmfabc.projector.client.media.net.OnlineVideos.online(w)) {
+                            // 在线源：本地文件由在线缓存自己下，**绝不去问服务端要这个哈希**
+                            Projector.LOGGER.info("[Projector][视频] 在线源还没下完（{}），等在线缓存", name);
+                        } else {
+                            Projector.LOGGER.info("[Projector][视频] 本地还没有这份媒体（{}），已在请求整段下载", name);
+                            MediaCache.prefetch(hash, true);
+                        }
                     }
                 } else {
                     hadFile = true;
                     session = WaterMediaBridge.open(file, loop);
+                }
                 }
             } catch (Throwable t) {
                 Projector.LOGGER.warn("[Projector][视频] WaterMedia 打开异常：{}", t.toString());
@@ -212,6 +252,12 @@ public final class WaterMediaVideos {
      * 加上正确扩展名（不复制内容、不额外占空间），让解码器愿意打开它。</p>
      */
     public static Path playablePath(String hash, String mediaName) {
+        // 【27.1.3】在线视频：文件在 cache/online/ 下，**不在素材目录、也不叫 <hash>.bin**，
+        // 所以先问它的主人（少这一条就是「下载完成却一直说本地没有这份媒体」）。
+        Path online = top.hmjmfabc.projector.client.media.net.OnlineVideoCache.fileForId(hash);
+        if (online != null && Files.isRegularFile(online)) {
+            return online;
+        }
         LocalMedia.MediaFile file = LocalMedia.byHash(hash);
         if (file != null && file.path() != null && Files.isRegularFile(file.path())) {
             return file.path();

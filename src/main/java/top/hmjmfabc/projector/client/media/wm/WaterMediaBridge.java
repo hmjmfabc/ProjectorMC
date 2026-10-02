@@ -212,25 +212,52 @@ public final class WaterMediaBridge {
         if (file == null || !Files.isRegularFile(file)) {
             return null;
         }
+        return openUri(file.toUri(), file, loop);
+    }
+
+    /**
+     * 【27.1.3】打开一个**远程**地址（直播 / HLS 这类「边下边播」的流）。
+     *
+     * <p>在线视频的普通视频是下载到本地再播的（B 站直链要带 Referer，我们只吃本地文件）；
+     * 但**直播流是无限的**，下载永远不结束 ⇒ 只能把这个地址直接交给解码器拉流。
+     * 直播 CDN 的地址一般自带签名，不带 Referer 也能拉。</p>
+     *
+     * <p>没装（或认不出方言）时返回 {@code null}，调用方显示「当前环境放不了流」。</p>
+     */
+    public static Session openRemote(String url, boolean loop) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        URI uri;
+        try {
+            uri = URI.create(url);
+        } catch (Throwable t) {
+            Projector.LOGGER.warn("[Projector][在线视频] 流地址不合法：{}", url);
+            return null;
+        }
+        return openUri(uri, null, loop);
+    }
+
+    private static Session openUri(URI uri, Path file, boolean loop) {
         Dialect d = dialect();
         try {
             if (d == Dialect.V3) {
-                return openV3(file, loop);
+                return openV3(uri, file, loop);
             }
             if (d == Dialect.V2) {
-                return openV2(file, loop);
+                return openV2(uri, file, loop);
             }
         } catch (Throwable t) {
             Projector.LOGGER.warn("[Projector][视频] WaterMedia({}) 打开失败，回退内置后端：{}（{}）",
-                    d.label(), file, t.toString());
+                    d.label(), uri, t.toString());
         }
         return null;
     }
 
-    private static Session openV3(Path file, boolean loop) throws Exception {
-        Object mrl = v3GetMrl.invoke(null, file.toUri());
+    private static Session openV3(URI uri, Path file, boolean loop) throws Exception {
+        Object mrl = v3GetMrl.invoke(null, uri);
         if (!awaitLoaded(mrl, 6000L)) {
-            Projector.LOGGER.warn("[Projector][视频] WaterMedia v3 打不开这个文件（MRL 未就绪）：{}", file);
+            Projector.LOGGER.warn("[Projector][视频] WaterMedia v3 打不开这个地址（MRL 未就绪）：{}", uri);
             return null;
         }
         final Thread glThread = renderThread != null ? renderThread : Thread.currentThread();
@@ -253,11 +280,11 @@ public final class WaterMediaBridge {
         return session;
     }
 
-    private static Session openV2(Path file, boolean loop) throws Exception {
+    private static Session openV2(URI uri, Path file, boolean loop) throws Exception {
         Object player = newV2Player();
         Session session = new Session(Dialect.V2, player, file);
         session.setLooping(loop);
-        v2Start.invoke(player, file.toUri());   // v2 自己异步起播，稍后 ready()
+        v2Start.invoke(player, uri);   // v2 自己异步起播，稍后 ready()
         logOpened(session);
         return session;
     }

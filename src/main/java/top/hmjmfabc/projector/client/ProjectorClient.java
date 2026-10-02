@@ -56,7 +56,11 @@ public final class ProjectorClient {
         event.enqueueWork(() -> {
             LocalMedia.ensureDirectories();
             registerMediaProber();
+            // 【27.2-pre-136】排版缓存必须在字体装载**之后**清一次：
+            // 装载过程中字体实例可能被新建，旧缓存键指向的对象已经不是当前字体。
+            top.hmjmfabc.projector.client.render.TextRenderer.clearCache();
             FontManager.loadBuiltins();
+            top.hmjmfabc.projector.client.render.TextRenderer.clearCache();
             registerWhiteTexture();
             verifyAtlasTexture();
             Projector.LOGGER.info("[Projector] 客户端就绪（字体 {} 个）", FontManager.count());
@@ -298,6 +302,14 @@ public final class ProjectorClient {
         Projector.LOGGER.info("[Projector][客户端] 媒体内存基线：{}｜音乐[{}]",
                 top.hmjmfabc.projector.client.media.MediaCache.memoryReport(),
                 top.hmjmfabc.projector.client.music.MusicManager.describeCache());
+        // 【27.1.3】缓存清理（放后台，别卡住进世界）：先清在线视频目录，再清本地缓存
+        //（本地缓存**优先清视频**，见 CacheCleaner）
+        Thread sweep = new Thread(() -> {
+            top.hmjmfabc.projector.client.media.net.OnlineVideoCache.sweep();
+            top.hmjmfabc.projector.client.media.CacheCleaner.sweep();
+        }, "Projector-Cache-Sweep");
+        sweep.setDaemon(true);
+        sweep.start();
     }
 
     private void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
@@ -306,6 +318,12 @@ public final class ProjectorClient {
         // 【27.1.2】把交给 WaterMedia 的视频会话全部释放（否则换世界后解码器还挂着）
         top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.releaseAll();
         top.hmjmfabc.projector.client.media.VideoControls.clear();
+        // 【27.2】网页控件：把浏览器会话全部释放（换世界后不该还挂着渲染进程），
+        // 并清掉世界内按钮栏的显隐状态（它纯属客户端显示状态）
+        top.hmjmfabc.projector.client.web.WebSessions.releaseAll();
+        top.hmjmfabc.projector.client.web.WebControls.clear();
+        // 【27.1.3】在线视频：状态表清掉（**本地文件保留**，下次进世界直接命中缓存）
+        top.hmjmfabc.projector.client.media.net.OnlineVideoCache.clear();
         PlaneCache.clear();
         SelectionState.clear();
         MediaCache.clearAll();

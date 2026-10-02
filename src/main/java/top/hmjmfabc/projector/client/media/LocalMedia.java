@@ -216,9 +216,10 @@ public final class LocalMedia {
      */
     public static boolean hasWholeCached(String hash) {
         if (hash == null || hash.isEmpty()) return false;
-        // 只认 BY_SHA1：它同时收录「玩家自己的素材文件（按键=文件 SHA-1）」与
-        // 「下载缓存 <hash>.bin（按键=服务端哈希）」，且从来不碰文件系统。
-        return BY_SHA1.containsKey(hash);
+        // 只认内存索引，从来不碰文件系统：
+        // ① BY_SHA1 = 素材目录扫描出来的；② REGISTERED = 外部登记的（在线视频、上传的原文件）
+        // —— **两张表都要看**，否则「本地明明有」会被判成没有。
+        return BY_SHA1.containsKey(hash) || REGISTERED.containsKey(hash);
     }
 
     /** 强制重新扫描。 */
@@ -434,8 +435,22 @@ public final class LocalMedia {
 
     /** 把「服务端下发并写入缓存」的文件登记进索引。 */
     public static void registerCache(String hash, Path path) {
-        BY_SHA1.put(hash, new MediaFile(hash, hash, path, false, sizeOf(path)));
+        // 【27.1.3 事故】以前这里写进 BY_SHA1，而 rescan() 最后会
+        // `BY_SHA1.clear(); putAll(重扫结果)` —— 重扫只认「素材目录」与
+        // 「cache/<hash>.bin」，于是**外部登记的文件两秒内就被冲掉**：
+        // 在线视频下载完 → 登记 → 后台重扫 → 查不到 → 播放端一直说「本地还没有这份媒体」
+        // ⇒ 玩家看到的正是「B 站视频能下载但放不了」（本地视频不受影响，它本来就在素材目录里）。
+        // 现在单独放一张重扫不会碰的表。
+        REGISTERED.put(hash, new MediaFile(hash, hash, path, false, sizeOf(path)));
     }
+
+    /**
+     * 【27.1.3】外部登记的文件（在线视频下载、上传时选的原文件）。
+     *
+     * <p><b>重扫不许清它</b>：这些文件不在素材目录里，重扫根本看不到它们。</p>
+     */
+    private static final Map<String, MediaFile> REGISTERED =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 取某个视频帧的缓存文件（服务端按需下发）。 */
     @Nullable
@@ -590,6 +605,10 @@ public final class LocalMedia {
         // 优先命中「玩家自己的素材文件」，而不是下载缓存
         MediaFile own = BY_SHA1.get(hash);
         if (own != null && Files.isRegularFile(own.path())) return own;
+        // 【27.1.3】外部登记的：在线视频下载下来的文件在 cache/online/ 下，
+        // 既不在素材目录、也不叫 <hash>.bin —— 只能靠这张表（以前它被重扫冲掉 ⇒ 「下载了却放不了」）
+        MediaFile reg = REGISTERED.get(hash);
+        if (reg != null && Files.isRegularFile(reg.path())) return reg;
         Path cached = cacheDir().resolve(hash + ".bin");
         if (Files.isRegularFile(cached)) {
             MediaFile mf = new MediaFile(hash, hash, cached, false, sizeOf(cached));

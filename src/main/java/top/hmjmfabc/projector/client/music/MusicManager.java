@@ -115,7 +115,11 @@ public final class MusicManager {
                     || player.state() == MusicPlayer.State.FAILED
                     || player.state() == MusicPlayer.State.IDLE;
             if (needsStart) {
-                if (at != null && allowStart(key, player, music, gameTime)) {
+                // 【27.2】本地音乐现在按「服务端哈希」引用：本机还没有这份文件时先请求下载，
+                // 下好了下一 tick 自然起播（以前这里会直接去开文件 ⇒ 抛异常 ⇒ 一声不响，
+                // 玩家看到的就是「服务器上别人听不到我放的本地音乐」）。
+                if (ensureAudioReady(music) && at != null
+                        && allowStart(key, player, music, gameTime)) {
                     startTrack(first.plane(), music, key, at, (float) hearDistance, volume, gameTime);
                 }
             } else {
@@ -144,6 +148,65 @@ public final class MusicManager {
             sweepCaches(level);
         }
     }
+
+    /**
+     * 【27.2】这首歌现在能放吗？不能放就顺手把「缺的那一份」要过来。
+     *
+     * <p>只处理「本地音乐 + 服务端哈希」这一种：网易云/直链自己会联网拉，
+     * 旧存档里的路径 key 只可能在有那份文件的机器上放得出来（日志里会说明）。</p>
+     *
+     * @return true = 现在就能开流（或这首歌根本不归这里管）；false = 正在下载，等下一 tick
+     */
+    private static boolean ensureAudioReady(MusicWidget music) {
+        MusicTrack track = MusicTrack.of(music);
+        if (track.kind() != MusicTrack.Kind.LOCAL || !MusicTrack.isHashKey(track.key())) {
+            return true;
+        }
+        String hash = track.key();
+        if (hasAudioLocally(hash)) {
+            return true;
+        }
+        // 【退避】tick 是 20 Hz：不设窗口的话，服务端一旦没有这份文件，
+        // 每 tick 都会发一次请求（TransferLog 会被刷爆）。15 秒最多问一次。
+        long now = System.currentTimeMillis();
+        Long next = AUDIO_ATTEMPT.get(hash);
+        if (next != null && now < next) {
+            return false;
+        }
+        if (AUDIO_ATTEMPT.size() > 256) {
+            AUDIO_ATTEMPT.clear();      // 兜底：极端情况下别把表撑爆
+        }
+        AUDIO_ATTEMPT.put(hash, now + AUDIO_RETRY_MS);
+        if (next == null) {
+            Projector.LOGGER.info("[Projector][音乐] 本机还没有这份音频（哈希 {}），"
+                    + "已向服务端请求下载；下载完成后会自动开始播放", MusicTrack.shortHash(hash));
+        } else {
+            Projector.LOGGER.debug("[Projector][音乐] 再次请求下载音频（哈希 {}）",
+                    MusicTrack.shortHash(hash));
+        }
+        try {
+            top.hmjmfabc.projector.client.media.MediaCache.prefetch(hash, false);
+        } catch (Throwable t) {
+            Projector.LOGGER.debug("[Projector][音乐] 请求下载音频失败（{}）：{}",
+                    MusicTrack.shortHash(hash), t.toString());
+        }
+        return false;
+    }
+
+    /** 本机有没有这份音频（索引出问题就当没有，别把异常抛到音频线程上）。 */
+    private static boolean hasAudioLocally(String hash) {
+        try {
+            return top.hmjmfabc.projector.client.media.LocalMedia.hasWhole(hash);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 上一次为某个哈希请求下载的时刻 + 退避窗口（退出世界时清空）。 */
+    private static final java.util.Map<String, Long> AUDIO_ATTEMPT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 同一份音频最多多久问一次服务端。 */
+    private static final long AUDIO_RETRY_MS = 15_000L;
 
     /** 清掉已经不存在于任何平面上的控件的波形缓存。 */
     private static void sweepCaches(ClientLevel level) {
@@ -321,6 +384,7 @@ public final class MusicManager {
 
     /** 退出世界 / 断线时清干净。 */
     public static void clearAll() {
+        AUDIO_ATTEMPT.clear();
         MusicPlayer.get().stop();
         ENVELOPES.clear();
         LYRICS.clear();

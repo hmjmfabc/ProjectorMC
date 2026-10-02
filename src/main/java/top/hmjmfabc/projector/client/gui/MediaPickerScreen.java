@@ -62,17 +62,17 @@ public class MediaPickerScreen extends ProjectorScreen {
                 f -> (f.video() ? "\u89c6\u9891  " : "\u56fe\u7247  ") + humanSize(f.size()),
                 (f, idx) -> {
                     selected = f;
-                    // 解不了的文件提前说一声，并指出转换按钮在哪（不涉及任何后端名词）
-                    status = needsConvert(f)
-                            ? "\u8fd9\u4e2a\u89c6\u9891\u76f4\u63a5\u653e\u4e0d\u4e86\uff0c"
-                              + "\u53ef\u4ee5\u7528\u53f3\u4fa7\u7684\u300c\u89c6\u9891\u683c\u5f0f\u8f6c\u6362\u2026\u300d"
-                            : "";
+                    // 【27.1.3】不再在这里预判「能不能放」：能不能播由解码器那边决定
+                    //（以前这里会提示去用「视频格式转换」，那个内置转换器已随 JCodec 一起移除）
+                    status = "";
                 });
         l.setItems(files);
         this.list = addRenderableWidget(l);
 
         int bx = pad + listW + 8;
         int bw = this.width - bx - pad;
+        // 服务端是否允许「原画上传」（以前定义在「视频格式转换」按钮块里，那个按钮已随内置转换器移除）
+        boolean serverAllows = top.hmjmfabc.projector.client.ClientServerInfo.allowOriginalUpload();
         button("\u786e\u8ba4", bx, this.height - pad - 24, Math.max(60, bw / 2 - 4), 20, b -> confirm());
         button("\u8fd4\u56de", bx + Math.max(60, bw / 2 - 4) + 8, this.height - pad - 24,
                 Math.max(60, bw / 2 - 4), 20, b -> Minecraft.getInstance().setScreen(parent));
@@ -80,24 +80,16 @@ public class MediaPickerScreen extends ProjectorScreen {
             LocalMedia.rescan();
             if (list != null) list.setItems(LocalMedia.byKind(video));
         });
+        // 【27.1.3】不选文件，直接建一个「在线视频」控件（链接在编辑器里粘）：
+        // 有些玩家本地一个视频都没有，只想贴个 B 站链接，不该被「先选文件」挡住。
+        if (video) {
+            button("\u65b0\u5efa\u5728\u7ebf\u89c6\u9891\uff08\u7c98\u94fe\u63a5\uff09",
+                    bx, this.height - pad - 120, Math.max(60, bw), 20, b -> createOnline());
+        }
         button("\u6253\u5f00\u7d20\u6750\u76ee\u5f55", bx, this.height - pad - 72, Math.max(60, bw), 20, b -> {
             LocalMedia.ensureDirectories();
             status = LocalMedia.mediaDir().toString();
         });
-        // 视频格式转换：直接放不了的格式，在这里转成能放的（判定见 needsConvert）
-        button("\u89c6\u9891\u683c\u5f0f\u8f6c\u6362\u2026", bx, this.height - pad - 96, Math.max(60, bw), 20, b -> {            if (selected == null) {
-                status = "\u8bf7\u5148\u5728\u5de6\u4fa7\u9009\u4e2d\u4e00\u4e2a\u89c6\u9891\u6587\u4ef6";
-                return;
-            }
-            Minecraft.getInstance().setScreen(new ConvertScreen(this, selected.path(), () -> {
-                if (list != null) list.setItems(LocalMedia.byKind(video));
-                status = "\u8f6c\u6362\u5b8c\u6210\uff0c\u5df2\u5237\u65b0\u5217\u8868";
-            }));
-        }).active = video;
-
-        // 【②】「原画上传」勾选框：只有服务端启用了该配置项时才能勾。
-        // 服务端没开时把它显示成灰色并说明原因，免得玩家以为是坏的。
-        boolean serverAllows = top.hmjmfabc.projector.client.ClientServerInfo.allowOriginalUpload();
         var orig = button((originalQuality ? "\u2611 " : "\u2610 ")
                         + "\u539f\u753b\u4e0a\u4f20\uff08\u4e0d\u538b\u753b\u8d28\uff09",
                 bx, this.height - pad - 120, Math.max(60, bw), 20, b -> {
@@ -105,20 +97,6 @@ public class MediaPickerScreen extends ProjectorScreen {
                     rebuildWidgets();
                 });
         orig.active = video && serverAllows;
-    }
-
-    /**
-     * 该文件是不是「本模组直接放不了、需要先转换」的格式。
-     *
-     * <p>判据只有一条：{@link MediaUploader#probeVideo} 认不认它
-     * （内置能解，或者外部解码器能放，都算认）。</p>
-     */
-    private static boolean needsConvert(LocalMedia.MediaFile f) {
-        if (f == null || !f.video()) return false;
-        if (MediaUploader.externalVideo(f.path())) {
-            return false;      // 能直接放：不必转、也不必抽帧压缩
-        }
-        return MediaUploader.probeVideo(f.path()) == null;
     }
 
     private void confirm() {
@@ -305,12 +283,41 @@ public class MediaPickerScreen extends ProjectorScreen {
         }
     }
 
+    /**
+     * 【27.1.3】建一个「在线视频」控件：不选文件，留个 {@code https://} 前缀，
+     * 直接进编辑器让玩家把链接补完（编辑器第二行就是链接输入框）。
+     *
+     * <p>尺寸先按 16:9 给一个框 —— 真实比例要等解析出直链才知道，
+     * 拿到之后玩家可以自己拖，或者重新进编辑器调。</p>
+     */
+    private void createOnline() {
+        if (!(target instanceof VideoWidget vid)) {
+            return;
+        }
+        vid.mediaId = "";
+        vid.mediaName = "";
+        // 非空即「在线源」（onClose 靠它判断这个控件不是「忘了选文件」）；解析时会因为
+        // 还不是合法链接而什么都不做，玩家补完就生效。
+        vid.sourceUrl = "https://";
+        double w0 = Math.max(24, Math.min(plane.width, plane.height) / 3.0);
+        vid.w = w0;
+        vid.h = w0 * 9.0 / 16.0;
+        vid.fps = 10;
+        vid.startTimeMs = 0;
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector][在线视频] 新建在线视频控件 {}（{:.1f}x{:.1f} 单位），"
+                        + "请在编辑器里粘贴链接", vid.id.toString().substring(0, 8), vid.w, vid.h);
+        Minecraft.getInstance().setScreen(new WidgetEditorScreen(plane, target, parent));
+    }
+
     @Override
     public void onClose() {
         // 这个控件是在「新增控件」阶段就先建好的；用户直接返回时把它删掉，
         // 避免平面上残留一个永远没有媒体的空图片/视频控件。
         boolean empty = (target instanceof ImageWidget iw && (iw.mediaId == null || iw.mediaId.isEmpty()))
-                || (target instanceof VideoWidget vw && (vw.mediaId == null || vw.mediaId.isEmpty()));
+                || (target instanceof VideoWidget vw && (vw.mediaId == null || vw.mediaId.isEmpty())
+                        // 【27.1.3】在线视频控件本来就没有上传的素材：填了链接就不算「空」
+                        && !vw.isOnline());
         if (empty) {
             CompoundTag t = new CompoundTag();
             t.putUUID("widget", target.id);

@@ -77,6 +77,37 @@ public final class LeaderboardSource {
      * @param maxRows    最多取多少行（内部还会限一次上限，防止有人写个 100 万行）
      */
     public static List<Row> rows(String objectiveName, boolean descending, int maxRows) {
+        // 【27.2-pre-136】按 TTL 缓存：排行榜控件每帧都会来问一次，而这里要做
+        // 「遍历计分板全部条目 + 排序 + 建 list」。计分板变化很慢，0.5 秒足够新鲜。
+        String key = objectiveName + "|" + descending + "|" + maxRows;
+        long now = System.currentTimeMillis();
+        Cache hit = CACHE.get(key);
+        if (hit != null && now - hit.at < CACHE_TTL_MS) {
+            return hit.rows;
+        }
+        List<Row> computed = List.copyOf(computeRows(objectiveName, descending, maxRows));
+        if (CACHE.size() > 32) {
+            CACHE.clear();
+        }
+        CACHE.put(key, new Cache(computed, now));
+        return computed;
+    }
+
+    /** 排行榜的短缓存（不会过期得太久：玩家改计分板后 0.5 秒内就会看到）。 */
+    private static final long CACHE_TTL_MS = 500L;
+    private static final java.util.Map<String, Cache> CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class Cache {
+        final List<Row> rows;
+        final long at;
+
+        Cache(List<Row> rows, long at) {
+            this.rows = rows;
+            this.at = at;
+        }
+    }
+
+    private static List<Row> computeRows(String objectiveName, boolean descending, int maxRows) {
         List<Row> out = new ArrayList<>();
         Objective obj = resolve(objectiveName);
         if (obj == null) return out;

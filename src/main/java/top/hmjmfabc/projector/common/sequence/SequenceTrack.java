@@ -178,67 +178,60 @@ public final class SequenceTrack {
         if (ended && !isLast) return SequenceAnim.State.HIDDEN;
 
         double dx = 0, dy = 0, dDepth = 0, scale = 1, alpha = 1, rot = 0;
+        double scaleX = 1, scaleY = 1;
 
+        // 位移类动画的「按控件尺寸自动取」距离：与旧版逐字一致（最长边 × 0.8）
+        double autoDist = Math.max(widget.w, widget.h) * 0.8;
+        double dist = clip.slideDistance > 0 ? clip.slideDistance : autoDist;
+
+        // 下面三段都是「把一份效果状态叠加上去」：位移相加、缩放与透明度相乘。
+        // 效果本身由 SequenceAnim 给出 —— 动画选择界面的预览用的是同一份函数。
         // ---- 入场 ----
-        double inP = clip.inDur <= 0.0001 ? 1.0 : SequenceAnim.ease((t - clip.startSec) / clip.inDur);
+        double inP = clip.inDur <= 0.0001 ? 1.0 : (t - clip.startSec) / clip.inDur;
         if (!ended || isLast) {
-            switch (clip.inAnim) {
-                case SequenceAnim.ANIM_SLIDE -> {
-                    double dist = clip.slideDistance > 0 ? clip.slideDistance
-                            : Math.max(widget.w, widget.h) * 0.8;
-                    double rad = Math.toRadians(clip.slideAngle);
-                    dx += Math.cos(rad) * dist * (1 - inP);
-                    dy += Math.sin(rad) * dist * (1 - inP);
-                }
-                case SequenceAnim.ANIM_FADE -> alpha *= inP;
-                case SequenceAnim.ANIM_SCALE -> scale *= 0.2 + 0.8 * inP;
-                case SequenceAnim.ANIM_DROP -> {
-                    // 在平面前方 DROP_BLOCKS 格处开始，快速移动到平面上；下落过程带渐显
-                    dDepth += SequenceAnim.DROP_BLOCKS * (1 - inP);
-                    alpha *= inP;
-                }
-                default -> {
-                }
-            }
+            SequenceAnim.State e = SequenceAnim.inEffect(
+                    clip.inAnim, inP, clip.slideAngle, dist);
+            dx += e.dx();
+            dy += e.dy();
+            dDepth += e.dDepth();
+            scale *= e.scale();
+            scaleX *= e.scaleX();
+            scaleY *= e.scaleY();
+            alpha *= e.alpha();
+            rot += e.rotDeg();
         }
 
         // ---- 出场（末尾片段不出场）----
         if (!isLast && clip.outDur > 0.0001 && t > clip.endSec - clip.outDur) {
-            double outP = SequenceAnim.ease((t - (clip.endSec - clip.outDur)) / clip.outDur);
-            switch (clip.outAnim) {
-                case SequenceAnim.ANIM_FADE -> alpha *= (1 - outP);
-                case SequenceAnim.ANIM_SCALE -> scale *= 1 - 0.8 * outP;
-                case SequenceAnim.ANIM_SLIDE -> {
-                    double dist = clip.slideDistance > 0 ? clip.slideDistance
-                            : Math.max(widget.w, widget.h) * 0.8;
-                    double rad = Math.toRadians(clip.slideAngle);
-                    dx += Math.cos(rad) * dist * outP;
-                    dy += Math.sin(rad) * dist * outP;
-                }
-                case SequenceAnim.ANIM_DROP -> {
-                    dDepth -= SequenceAnim.DROP_BLOCKS * outP;
-                    alpha *= (1 - outP);
-                }
-                default -> {
-                }
-            }
+            double outP = (t - (clip.endSec - clip.outDur)) / clip.outDur;
+            SequenceAnim.State e = SequenceAnim.outEffect(
+                    clip.outAnim, outP, clip.slideAngle, dist);
+            dx += e.dx();
+            dy += e.dy();
+            dDepth += e.dDepth();
+            scale *= e.scale();
+            scaleX *= e.scaleX();
+            scaleY *= e.scaleY();
+            alpha *= e.alpha();
+            rot += e.rotDeg();
         }
 
         // ---- 循环动画（与显示时长无关，用绝对时间驱动）----
         if (clip.loopAnim != SequenceAnim.LOOP_NONE && clip.loopSpeed > 0.001) {
             double phase = t * clip.loopSpeed * Math.PI * 2;
-            double s = Math.sin(phase);
-            switch (clip.loopAnim) {
-                case SequenceAnim.LOOP_SWING -> rot += clip.loopAmp * s;
-                case SequenceAnim.LOOP_PULSE -> scale *= 1 + (clip.loopAmp / 100.0) * s;
-                case SequenceAnim.LOOP_FLOAT -> dy += clip.loopAmp * s;
-                default -> {
-                }
-            }
+            SequenceAnim.State e = SequenceAnim.loopEffect(clip.loopAnim, phase, clip.loopAmp);
+            dx += e.dx();
+            dy += e.dy();
+            dDepth += e.dDepth();
+            scale *= e.scale();
+            scaleX *= e.scaleX();
+            scaleY *= e.scaleY();
+            alpha *= e.alpha();
+            rot += e.rotDeg();
         }
 
         return new SequenceAnim.State(true, dx, dy, dDepth, scale,
-                SequenceAnim.clamp01(alpha), rot);
+                SequenceAnim.clamp01(alpha), rot, scaleX, scaleY);
     }
 
     /**

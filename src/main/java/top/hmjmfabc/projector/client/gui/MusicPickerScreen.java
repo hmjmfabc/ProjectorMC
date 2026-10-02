@@ -231,16 +231,25 @@ public class MusicPickerScreen extends ProjectorScreen {
             return;
         }
         MusicTrack track = entry.track();
-        if (track.kind() == MusicTrack.Kind.LOCAL && track.durationMs() <= 0) {
-            // 本地文件的音频里没有元数据时长：选中时后台量一次，
-            // 免得控件先显示成兜底的 3:00（用户实测报过「2:40 显示成 3:00」）
+        boolean local = track.kind() == MusicTrack.Kind.LOCAL;
+        // 【27.2】本地音乐要干两件事：① 发布到服务端（否则**别的玩家听不到**）
+        //   ② 量一次时长（音频里没有元数据时长，免得显示成兜底的 3:00）。
+        //   两种活都在同一个工作线程里做完再回主线程提交，中间不碰界面状态。
+        if (local && (track.durationMs() <= 0 || !MusicTrack.isHashKey(track.key()))) {
             picked = true;
-            status = "正在读取音频时长…";
+            status = "正在读取音频并发布到服务端…（别的玩家靠这一份才能听到）";
             Thread worker = new Thread(() -> {
-                long duration = probeDuration(track);
-                Minecraft.getInstance().execute(() -> onPick.accept(duration > 0
-                        ? MusicTrack.local(track.key(), track.title(), duration) : track));
-            }, "Projector-Music-Probe");
+                java.nio.file.Path file = MusicTrack.resolveLocal(track.key());
+                top.hmjmfabc.projector.client.music.MusicShare.Published pub =
+                        top.hmjmfabc.projector.client.music.MusicShare.publish(file,
+                        file == null ? track.title() : file.getFileName().toString());
+                String key = pub.key() == null || pub.key().isBlank() ? track.key() : pub.key();
+                long duration = probeDuration(key, file);
+                Minecraft.getInstance().execute(() -> {
+                    status = pub.message();
+                    onPick.accept(MusicTrack.local(key, track.title(), duration));
+                });
+            }, "Projector-Music-Publish");
             worker.setDaemon(true);
             worker.start();
             return;
@@ -253,8 +262,8 @@ public class MusicPickerScreen extends ProjectorScreen {
      * 量本地音频的时长：解码一次 + **把文件大小交给探测器**（码率×字节数那条最可靠，
      * 因为 mp3spi 对「流式读入的 MP3」不给帧数）。
      */
-    private static long probeDuration(MusicTrack track) {
-        java.nio.file.Path path = MusicTrack.resolveLocal(track.key());
+    private static long probeDuration(String key, java.nio.file.Path file) {
+        java.nio.file.Path path = file != null ? file : MusicTrack.resolveLocal(key);
         long bytes = 0L;
         try {
             if (path != null) {
@@ -263,6 +272,8 @@ public class MusicPickerScreen extends ProjectorScreen {
         } catch (Throwable ignored) {
             // 拿不到大小就走后面的兜底
         }
+        // 【27.2】用 key 打开：哈希 key 走「本地索引 / 下载缓存」，路径 key 走文件查找
+        MusicTrack track = MusicTrack.local(key, "", 0L);
         try (java.io.InputStream raw = track.openStream();
              javax.sound.sampled.AudioInputStream pcm =
                      top.hmjmfabc.projector.client.music.AudioDecoder.open(raw)) {

@@ -42,10 +42,10 @@ public record MusicTrack(Kind kind, String key, String title, String artist, lon
     /**
      * 可以播放的本地扩展名。
      *
-     * <p>{@code m4a/aac} 刻意不在列表里：AAC 解码库与内置 JCodec 的包名冲突，
-     * 装上去会让游戏在启动阶段崩（详见 {@code AudioDecoder} 与 NOTICE）。</p>
+     * <p>{@code m4a/aac} 于 Build 112 加回来：JCodec 已从模组里移除，AAC 解码库
+     * （javasound-aac，含 JAAD 与 mp4 容器解析）不再与它同名包冲突（详见 {@code AudioDecoder} 与 NOTICE）。</p>
      */
-    public static final List<String> AUDIO_EXT = List.of("mp3", "flac", "wav");
+    public static final List<String> AUDIO_EXT = List.of("mp3", "flac", "wav", "m4a", "aac");
 
     public static MusicTrack local(String key, String title, long durationMs) {
         return new MusicTrack(Kind.LOCAL, key, title, "", durationMs);
@@ -71,6 +71,26 @@ public record MusicTrack(Kind kind, String key, String title, String artist, lon
         return t == null ? "" : t;
     }
 
+    /**
+     * 【27.2】这个 key 是不是「服务端媒体哈希」。
+     *
+     * <p>本地音乐有**两种**存法，必须分得清：</p>
+     * <ul>
+     *   <li>旧存档 / 单人时代：key = 文件路径（相对音乐目录或绝对路径）；</li>
+     *   <li>27.2 起：key = 文件内容的 **SHA-1** —— 选歌时会先把这首上传到服务端，
+     *       别的玩家才拿得到同一份音频（这正是「服务器上其他玩家听不到玩家 A 的
+     *       本地音乐」的修法）。</li>
+     * </ul>
+     */
+    public static boolean isHashKey(String key) {
+        return top.hmjmfabc.projector.server.Sanitize.isHash(key);
+    }
+
+    /** 哈希的短显示形式（日志/界面用）。 */
+    public static String shortHash(String key) {
+        return key == null || key.length() < 8 ? String.valueOf(key) : key.substring(0, 8);
+    }
+
     /** 拉流用的地址：本地是 {@code file:}，其余是 http(s)。 */
     public String playUrl() {
         if (kind == Kind.NETEASE) {
@@ -83,18 +103,41 @@ public record MusicTrack(Kind kind, String key, String title, String artist, lon
     /** 诊断用的一行字（不含时效性的直链参数）。 */
     public String describeSource() {
         return switch (kind) {
-            case LOCAL -> "本地文件 " + key;
+            case LOCAL -> isHashKey(key) ? "服务端音频 " + shortHash(key) : "本地文件 " + key;
             case NETEASE -> "网易云歌曲 " + key;
             case URL -> "直链 " + key;
         };
     }
 
-    /** 打开音频字节流。 */
+    /**
+     * 打开音频字节流。
+     *
+     * <p>【27.2】本地音乐两种存法的分岔都在这一个入口里：哈希走
+     * {@link LocalMedia#open(String)}（本机素材目录或下载缓存都能命中），
+     * 路径走原来的文件查找。**误差不许静默**：两种都拿不到时抛出写明原因与哈希的异常，
+     * 由 {@code MusicPlayer} 打进日志（「其他玩家听不到」这类问题就靠这一行定位）。</p>
+     */
     public InputStream openStream() throws IOException {
         if (kind == Kind.LOCAL) {
+            if (isHashKey(key)) {
+                // 索引本身出问题（早期调用/无头环境）时也走「还没下载」这条明确提示，
+                // 不要把 NPE 抛到音频线程上 —— 那种错误连日志都看不出是什么原因
+                boolean have;
+                try {
+                    have = LocalMedia.hasWhole(key);
+                } catch (Throwable t) {
+                    have = false;
+                }
+                if (!have) {
+                    throw new IOException("这份音乐还没下载到本机（哈希 " + shortHash(key)
+                            + "）；客户端会向服务端请求，下好之后自动开始播放");
+                }
+                return LocalMedia.open(key);
+            }
             Path path = resolveLocal(key);
             if (path == null) {
-                throw new IOException("本地音频文件不存在：" + key);
+                throw new IOException("本地音频文件不存在：" + key
+                        + "（旧存档里的本地音乐只有本机有；重新选一次这首歌会上传到服务端）");
             }
             return Files.newInputStream(path);
         }

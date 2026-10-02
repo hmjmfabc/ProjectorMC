@@ -31,6 +31,44 @@ public class TextWidget extends Widget {
      */
     public boolean manualSize;
 
+    // ------------------------------------------------------------------
+    // 【27.2-pre-136】「打字」动画（参考剪映的文字打字效果）
+    // ------------------------------------------------------------------
+
+    /** 是否开启「打字」动画：文字一个一个字冒出来。 */
+    public boolean typewriter;
+    /** 打字速度（每秒多少个字）。 */
+    public double typeSpeed = 6.0;
+    /** 打完一遍之后是否从头再来（关掉就停在打完的样子）。 */
+    public boolean typeLoop = true;
+    /** 打完一整遍之后停多久再重来（秒）。 */
+    public double typeHold = 1.5;
+
+    /**
+     * 这一刻应该显示到第几个字（打字动画）。
+     *
+     * @param gameTime 游戏时刻（tick，20 = 1 秒）；与流程动画/音乐控件用的是同一个时钟
+     * @return 可见字数；关掉打字动画时返回 {@link Integer#MAX_VALUE}（表示「全部显示」）
+     */
+    public int typedChars(long gameTime) {
+        if (!typewriter) return Integer.MAX_VALUE;
+        int total = top.hmjmfabc.projector.common.text.TextLayout.visibleCount(text);
+        if (total <= 0) return Integer.MAX_VALUE;
+        double speed = typeSpeed <= 0.05 ? 6.0 : typeSpeed;
+        double elapsed = gameTime / 20.0;
+        double n;
+        if (typeLoop) {
+            double hold = Math.max(0.0, typeHold);
+            double cycle = total / speed + hold;
+            double phase = cycle <= 0.01 ? 0 : elapsed % cycle;
+            n = Math.floor(phase * speed);
+        } else {
+            n = Math.floor(elapsed * speed);
+        }
+        if (n <= 0) return 0;
+        return n >= total ? Integer.MAX_VALUE : (int) n;
+    }
+
     @Override
     public int kind() {
         return KIND_TEXT;
@@ -59,6 +97,10 @@ public class TextWidget extends Widget {
         t.putInt("align", align);
         t.putBoolean("shadow", shadow);
         t.putBoolean("manualSize", manualSize);
+        t.putBoolean("typewriter", typewriter);
+        t.putDouble("typeSpeed", typeSpeed);
+        t.putBoolean("typeLoop", typeLoop);
+        t.putDouble("typeHold", typeHold);
     }
 
     @Override
@@ -71,5 +113,10 @@ public class TextWidget extends Widget {
         align = t.getInt("align");
         shadow = !t.contains("shadow") || t.getBoolean("shadow");
         manualSize = t.getBoolean("manualSize");
+        // 旧存档没有这几个键 -> 默认关闭打字动画（表现与以前完全一致）
+        typewriter = t.contains("typewriter") && t.getBoolean("typewriter");
+        typeSpeed = t.contains("typeSpeed") ? t.getDouble("typeSpeed") : 6.0;
+        typeLoop = !t.contains("typeLoop") || t.getBoolean("typeLoop");
+        typeHold = t.contains("typeHold") ? t.getDouble("typeHold") : 1.5;
     }
 }

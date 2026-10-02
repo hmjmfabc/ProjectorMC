@@ -97,6 +97,32 @@ public final class ProjectorConfig {
     public final ModConfigSpec.BooleanValue realLightForWidgets;
     /** 【hotfix-II】从背面「贴面透墙」看到内容的最大距离（0 = 只有贴到平面时）。 */
     public final ModConfigSpec.DoubleValue renderBackfaceSeeThrough;
+    /** 【27.1.3】B 站 Cookie（在线视频；留空 = 游客态）。 */
+    public final ModConfigSpec.ConfigValue<String> onlineBilibiliCookie;
+    /** 【27.1.3】单个在线视频的下载上限（MB）。 */
+    public final ModConfigSpec.IntValue onlineMaxDownloadMb;
+    /** 【27.1.3】在线视频缓存目录总上限（MB）。 */
+    public final ModConfigSpec.IntValue onlineCacheMb;
+    /** 【27.1.3】在线视频缓存保留天数（0 = 不按时间清理）。 */
+    public final ModConfigSpec.IntValue onlineKeepDays;
+    /** 【27.1.3】客户端本地缓存目录总上限（MB，0 = 不限）。 */
+    public final ModConfigSpec.IntValue mediaClientCacheMb;
+    /** 【27.1.3】客户端本地缓存保留天数（0 = 不按时间清理）。 */
+    public final ModConfigSpec.IntValue mediaClientCacheKeepDays;
+
+    // ---- 【27.2】网页控件（可选前置模组 MCEF）----
+    /** 同屏最多同时存在几个浏览器会话（超限按最久未用释放）。 */
+    public final ModConfigSpec.IntValue webMaxSessions;
+    /** 离开视野多久释放浏览器（秒）。 */
+    public final ModConfigSpec.IntValue webIdleReleaseSec;
+    /** 创建后多久还没拿到画面就判定「无帧」并降级（秒）。 */
+    public final ModConfigSpec.IntValue webNoFrameTimeoutSec;
+    /** 渲染密度上限（画布 1 单位最多渲染多少像素）。 */
+    public final ModConfigSpec.IntValue webMaxPixelPerUnit;
+    /** 【客户端】抓帧宽度上限（像素）：性能开关，像素数就是解码 + 上传的成本。 */
+    public final ModConfigSpec.IntValue webMaxCaptureWidth;
+    /** 是否允许在这个服务器上新建网页控件。 */
+    public final ModConfigSpec.BooleanValue webAllowWebWidget;
 
     private ProjectorConfig(ModConfigSpec.Builder b) {
         b.comment("平面（Plane）相关限制").push("planes");
@@ -221,10 +247,19 @@ public final class ProjectorConfig {
 
         cacheTier = b.comment("【⑫ 客户端】媒体缓存档位（本项只对客户端有意义）：\n"
                         + "  0 = 保守：所有媒体都只在需要渲染时才缓存（可能长时间加载不出来）；\n"
-                        + "  1 = 平衡（默认，推荐）：后台提前缓存服务端**图片**，视频仍按需缓存；\n"
-                        + "  2 = 激进：提前缓存全部媒体（不推荐，很费服务端带宽；除非服务端在内网）。\n"
+                        + "  1 = 平衡（默认，推荐）：后台提前缓存服务端**图片**；\n"
+                        + "  2 = 激进：同上（**视频从 27.1.3 起一律按需：点了播放才下载**）。\n"
                         + "若服务端没开「允许客户端后台缓存视频」，选 2 也会自动回滚到 1。")
                 .defineInRange("cacheTier", 1, 0, 2);
+        // 【27.1.3】客户端磁盘缓存的清理（用户要求：优先清视频）
+        mediaClientCacheMb = b.comment("【客户端】本地缓存目录的总上限（MB，0 = 不限）。\n"
+                        + "目录：<gamedir>/projector/cache/（服务端素材的本地副本、视频帧）。\n"
+                        + "超过上限时**先删视频、后删图片**（视频动辄几十上百 MB，图片通常几十 KB）。")
+                .defineInRange("clientCacheMb", 2048, 0, 65536);
+        mediaClientCacheKeepDays = b.comment("【客户端】本地缓存保留多少天（0 = 不按时间清理）。\n"
+                        + "同样是**先清视频**。正在播放/正在显示的媒体、以及十分钟内还在下载的\n"
+                        + "半成品文件都不会被删。在线视频缓存在 cache/online/ 下有它自己的上限。")
+                .defineInRange("clientCacheKeepDays", 14, 0, 3650);
         b.pop();
 
         b.comment("视频转换（MP4 等 -> MJPEG / ZIP 帧序列）").push("convert");
@@ -254,6 +289,60 @@ public final class ProjectorConfig {
                         + "免费歌曲可以正常播放，VIP/高码率歌曲会失败（会给出提示）。\n"
                         + "填法：浏览器登录 music.163.com 后复制整条 Cookie（含 MUSIC_U=...）。")
                 .define("neteaseCookie", "");
+        b.pop();
+
+        // 【27.1.3】在线视频（视频控件支持 B 站链接与任意直链）
+        b.comment("在线视频（视频控件里的 B 站链接 / 直链）").push("online");
+        onlineBilibiliCookie = b.comment("B 站 Cookie（可选）。留空时是游客态：\n"
+                        + "普通投稿视频与免费番剧正常解析；会员专享/高画质会失败（日志会写明）。\n"
+                        + "填法：浏览器登录 bilibili.com 后复制整条 Cookie（含 SESSDATA=...）。")
+                .define("bilibiliCookie", "");
+        onlineMaxDownloadMb = b.comment("单个在线视频的下载上限（MB）。超过就放弃并写明原因。\n"
+                        + "B 站一集 1080p 通常 50~300 MB；直播流这版还不支持。")
+                .defineInRange("maxDownloadMb", 512, 16, 8192);
+        onlineCacheMb = b.comment("在线视频缓存目录的总上限（MB）。超过后按最旧优先删除。\n"
+                        + "目录：<gamedir>/projector/cache/online/（与服务器素材的缓存分开）。")
+                .defineInRange("cacheMb", 2048, 256, 32768);
+        onlineKeepDays = b.comment("在线视频缓存保留多少天（0 = 不按时间清理）。")
+                .defineInRange("keepDays", 7, 0, 365);
+        b.pop();
+
+        // 【27.2】网页控件（可选前置模组 MCEF，LGPL：只按公开 API 名反射调用，不 import/不打包）
+        b.comment("网页控件（需要可选前置模组 MCEF；服务端只存 URL，不渲染）").push("web");
+        webAllowWebWidget = b.comment("是否允许新建网页控件。\n"
+                        + "默认 true。设为 false 后：①客户端「新增网页」按钮变灰；\n"
+                        + "②服务端仍会再判一次并说明原因（客户端拦住不算数）。\n"
+                        + "已经存在的网页控件不受影响（它们照旧显示），只有新增被挡住。")
+                .define("allowWebWidget", true);
+        webMaxSessions = b.comment("【客户端】同屏最多同时存在几个网页（浏览器实例）。\n"
+                        + "每个浏览器都是一个独立的渲染进程级开销（内存、CPU、网络），\n"
+                        + "所以这里默认只给 2 个；超出的按「最久没用过的」释放。")
+                .defineInRange("maxSessions", 2, 1, 16);
+        webIdleReleaseSec = b.comment("【客户端】某个网页离开视野后多少秒释放它的浏览器（默认 15 秒）。\n"
+                        + "调大 = 来回看时不用重建（更顺），代价是后台一直占着内存；\n"
+                        + "调小 = 省内存，但每次回头都要重新加载页面。")
+                .defineInRange("idleReleaseSec", 15, 2, 600);
+        webNoFrameTimeoutSec = b.comment("【客户端】创建浏览器后多少秒还没拿到画面就判定「无帧」并降级（默认 10 秒）。\n"
+                        + "为什么必须有它：安卓等平台上浏览器对象能创建成功、却永远没有画面\n"
+                        + "（原生层在、外部浏览器不在）。没有这个超时，玩家会一直对着一块灰蓝占位块发呆。")
+                .defineInRange("noFrameTimeoutSec", 10, 3, 120);
+        webMaxPixelPerUnit = b.comment("【客户端/服务端】渲染密度上限：画布 1 单位最多渲染多少像素。\n"
+                        + "控件在画布上是「单位」，16 单位 = 1 方块；密度 × 控件尺寸 = 网页实际分辨率。\n"
+                        + "密度越大越清晰，显存与浏览器侧的合成开销也越大（上限 24）。\n"
+                        + "服务端会用这个值夹客户端提交的密度（防止有人提交一个 4096x4096 的网页）。")
+                .defineInRange("maxPixelPerUnit", 24, 1, 64);
+        webMaxCaptureWidth = b.comment("【客户端】抓帧宽度上限（像素，默认 1280）。\n"
+                        + "网页每出一帧都要走「Chromium 编码 → 网络 → 纯 Java 解码 → GL 上传」这条链，\n"
+                        + "像素数就是这条链的成本；而平面上的网页在手机上通常只占屏幕几百像素，\n"
+                        + "抓 1920 以上的帧纯属浪费（解码与上传都按像素数涨）。\n"
+                        + "默认 1280 已经足够清晰；嫌糊可以调到 1600/1920，嫌卡调到 960/800。")
+                .defineInRange("maxCaptureWidth", 1280, 320, 1920);
+        // ⚠ TODO（27.2 实现者 A）：maxSessions / idleReleaseSec / noFrameTimeoutSec 三项
+        //   是给 client/web/WebSessions 用的（会话上限 / 空闲释放 / 无帧超时）。
+        //   本文件已经把键与默认值备好，WebSessions 里改成读这三个键即可
+        //   （写成 ProjectorConfig.INSTANCE.webMaxSessions.get() 这种形式）；
+        //   maxPixelPerUnit 与 allowWebWidget 这版已经有人在读
+        //   （ServerNetHandler 的清洗与新增门禁）。
         b.pop();
 
         b.comment("渲染相关").push("render");

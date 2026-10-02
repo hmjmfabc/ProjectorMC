@@ -71,6 +71,11 @@ public final class WorldPlaneRenderer {
         // 不缓存的话一个 100 控件的平面每帧就要读 100 次 Minecraft.level。
         newFrame();
         List<Plane> planes = PlaneCache.planesIn(level.dimension().location());
+        // 【27.2】网页控件的会话生命周期：按需创建浏览器 / 尺寸变化才 resize /
+        // 自动刷新 / 离开视野 15 秒释放。必须挂在**渲染线程 + 拿得到本维度平面列表**的地方
+        // （创建浏览器只能从渲染线程调），而且要放在下面「空列表提前 return」之前 ——
+        // 否则一条平面都没有时（玩家走远、换个维度）就永远不会空闲释放。
+        tickWebSessions(mc, planes);
         if (planes.isEmpty()) {
             lastPlanes = 0;
             lastQuads = 0;
@@ -105,6 +110,32 @@ public final class WorldPlaneRenderer {
         lastPlanes = drawn;
         lastQuads = collector.quadCount();
     }
+
+    /**
+     * 【27.2】每帧驱动一次网页控件的会话（创建 / resize / 自动刷新 / 空闲释放）。
+     *
+     * <p>放在这里的三个理由：①只能从渲染线程创建浏览器；②每帧只跑一次，
+     * 不会随平面数量重复；③这一层拿得到「本维度当前已同步的平面列表」，
+     * 闲下来的控件才可能被释放。</p>
+     *
+     * <p>整段包在 try/catch 里：网页后端（可选前置模组）出任何问题都<b>不许</b>
+     * 把整帧平面渲染带崩 —— 拿不到画面就画占位块，玩家照样能看见其它控件。</p>
+     */
+    private static void tickWebSessions(Minecraft mc, List<Plane> planes) {
+        try {
+            top.hmjmfabc.projector.client.web.WebSessions.tick(mc, planes);
+        } catch (Throwable t) {
+            if (webTickErrorLogged) {
+                return;
+            }
+            webTickErrorLogged = true;
+            top.hmjmfabc.projector.Projector.LOGGER.warn(
+                    "[Projector][网页] 会话调度失败（本帧已跳过，后续同类错误不再重复记录）", t);
+        }
+    }
+
+    /** 会话调度异常只报一次，避免每帧刷屏。 */
+    private static boolean webTickErrorLogged;
 
     private void drawPlane(PoseStack pose, Plane plane, Vec3 cameraPos) {
         double[] axisX = axis(BlockFace.right(plane.face));

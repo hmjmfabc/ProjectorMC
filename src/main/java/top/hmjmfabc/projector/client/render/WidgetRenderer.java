@@ -75,10 +75,12 @@ public final class WidgetRenderer {
         final double ox = w.x, oy = w.y, ow = w.w, oh = w.h, orot = w.rot;
         final float oalpha = w.alpha;
         try {
-            // 缩放以「控件中心」为基准：绕左下角放大会让控件整体往右上跑，很别扭
-            double sx = st.scale();
-            if (sx != 1.0) {
-                double nw = ow * sx, nh = oh * sx;
+            // 缩放以「控件中心」为基准：绕左下角放大会让控件整体往右上跑，很别扭。
+            // 横纵可以不一样：「擦除展开」把宽度从 0 拉开、「翻页展开」把高度从 0 拉开。
+            double sx = st.effScaleX();
+            double sy = st.effScaleY();
+            if (sx != 1.0 || sy != 1.0) {
+                double nw = ow * sx, nh = oh * sy;
                 w.x = ox + (ow - nw) * 0.5;
                 w.y = oy + (oh - nh) * 0.5;
                 w.w = nw;
@@ -127,6 +129,10 @@ public final class WidgetRenderer {
                     (top.hmjmfabc.projector.common.widget.ChessWidget) w);
             case Widget.KIND_MUSIC -> MusicWidgetRenderer.draw(collector, plane, ctx,
                     (top.hmjmfabc.projector.common.widget.MusicWidget) w);
+            // 【27.2】网页控件：贴网页画面（纹理来自会话层）+ 底部按钮栏，
+            // 画法与视频分支同源（同一份 canvasQuad / 同一个 RenderType.text）。
+            case Widget.KIND_WEB -> WebWidgetRenderer.draw(collector, plane, ctx,
+                    (top.hmjmfabc.projector.common.widget.WebWidget) w);
             default -> {
             }
         }
@@ -137,12 +143,31 @@ public final class WidgetRenderer {
     // ------------------------------------------------------------------
 
     private static void drawText(QuadCollector collector, PlaneRenderContext ctx, TextWidget w) {
-        TtfFont font = FontManager.get(w.fontId);
-        TextRenderer.drawInBox(collector, ctx, font, w.text, w.fontSize, w.wrapWidth, w.lineSpacing,
-                w.align, 1, w.x, w.y, w.w, w.h, w.rot, w.alpha, ctx.depth());
+        // 【27.2-pre-136 修复】底色必须**先画**：以前它排在文字后面，两者又在同一深度，
+        // 于是「设了底色的文本控件」会被底色整个盖住 —— 玩家只会看到一块纯色。
         if (w.background != 0) {
             solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
         }
+        TtfFont font = FontManager.get(w.fontId);
+        // 【27.2-pre-136】「打字」动画：只画出「已经打出来的那部分」。
+        // 时钟与流程动画用的是同一个 gameTime，所以编辑器里也能看到它在打。
+        String shown = typedPrefix(w);
+        TextRenderer.drawInBox(collector, ctx, font, shown, w.fontSize, w.wrapWidth, w.lineSpacing,
+                w.align, 1, w.x, w.y, w.w, w.h, w.rot, w.alpha, ctx.depth());
+    }
+
+    /**
+     * 打字动画当前应当画出的文本（未开启时原样返回）。
+     *
+     * <p>截断走 {@code TextLayout.visiblePrefix}：格式化代码不算字数、也不会被截成半截。</p>
+     */
+    private static String typedPrefix(TextWidget w) {
+        if (!w.typewriter || w.text == null || w.text.isEmpty()) {
+            return w.text;
+        }
+        int n = w.typedChars(currentGameTime());
+        if (n == Integer.MAX_VALUE) return w.text;
+        return top.hmjmfabc.projector.common.text.TextLayout.visiblePrefix(w.text, n);
     }
 
     /** 控件尺寸退化（宽或高为 0）时不提交四边形：否则顶点全部重合，什么也画不出来。 */
@@ -184,17 +209,31 @@ public final class WidgetRenderer {
                 ctx.depth(), (float) w.u0, (float) w.v0, (float) w.u1, (float) w.v1, tint);
     }
 
-    /** 每个图片控件只在上报内容变化时打一条日志，便于定位「图片看不见」。 */
-    private static final java.util.Map<java.util.UUID, String> IMAGE_REPORT = new java.util.HashMap<>();
+    /**
+     * 每个图片控件只在上报内容变化时打一条日志，便于定位「图片看不见」。
+     *
+     * <p>【27.2-pre-136】以前这里是「每帧先 {@code String.format} 一整行、再和上次比」——
+     * 字符串是造出来了才发现没变。现在先比一个<b>轻量签名</b>（没有格式化），
+     * 只有真的变了才拼日志串。图片控件多的时候这是纯白省的每帧开销。</p>
+     */
+    private static final java.util.Map<java.util.UUID, ImageSig> IMAGE_REPORT = new java.util.HashMap<>();
+
+    /** 图片上报的「内容签名」：全是基本量，构造它不涉及格式化。 */
+    private record ImageSig(String media, int srcW, int srcH, double boxW, double boxH, String state) {
+    }
 
     private static void reportImage(ImageWidget w, String state, int srcW, int srcH) {
+        ImageSig sig = new ImageSig(
+                w.mediaName == null || w.mediaName.isEmpty() ? w.mediaId : w.mediaName,
+                srcW, srcH, w.w, w.h, state);
+        ImageSig old = IMAGE_REPORT.put(w.id, sig);
+        if (sig.equals(old)) {
+            return;
+        }
         String line = String.format(java.util.Locale.ROOT,
                 "素材=%s(%d×%d) 框=%.1fx%.1f 单位(%.2fx%.2f 格) 状态=%s",
-                w.mediaName == null || w.mediaName.isEmpty() ? w.mediaId : w.mediaName,
-                srcW, srcH, w.w, w.h, w.w / 16, w.h / 16, state);
-        if (!line.equals(IMAGE_REPORT.put(w.id, line))) {
-            top.hmjmfabc.projector.Projector.LOGGER.info("[Projector] 图片控件: {}", line);
-        }
+                sig.media(), srcW, srcH, w.w, w.h, w.w / 16, w.h / 16, state);
+        top.hmjmfabc.projector.Projector.LOGGER.info("[Projector] 图片控件: {}", line);
     }
 
     // ------------------------------------------------------------------
@@ -213,9 +252,34 @@ public final class WidgetRenderer {
 
     /** 视频画面本身（占位 / WaterMedia / 内置三条路）。 */
     private static void drawVideoBase(QuadCollector collector, PlaneRenderContext ctx, VideoWidget w) {
-        if (w.mediaId == null || w.mediaId.isEmpty()) {
+        // 【27.1.3】素材身份只从 OnlineVideos 一个入口问（在线源 = 本地缓存身份）
+        final String mediaId = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaId(w);
+        if (mediaId.isEmpty()) {
             placeholder(collector, ctx, w, 0x663377CC);
             return;
+        }
+        // 【27.1.3】按需加载：**点过播放才下载**（用户要求：所有视频统一这条规则）。
+        // 门只挡「要联网下载」的那一步：本地已经有这份素材（自己上传的视频/图片、
+        // 或在线源已经下完）就照旧直接显示，不需要先点一下。
+        final boolean online = top.hmjmfabc.projector.client.media.net.OnlineVideos.online(w);
+        final boolean localReady = online
+                ? top.hmjmfabc.projector.client.media.net.OnlineVideoCache.ready(w.sourceUrl)
+                : MediaCache.isLocallyAvailable(mediaId);
+        if (!localReady
+                && !top.hmjmfabc.projector.client.media.VideoControls.requested(w)) {
+            // 灰蓝占位 = 「还没加载」（与紫色「下载中」、橙色「内置加载中」、绿色「外部解码器」区分开）
+            loadingPlaceholder(collector, ctx, w, mediaId, 0, 0x66808A96);
+            reportNotLoaded(w);
+            return;
+        }
+        // 在线源：交给后台解析 + 下载；没下完就画「下载中」占位（紫色，和另外两种区分开）
+        if (online) {
+            top.hmjmfabc.projector.client.media.net.OnlineVideos.tick(w);
+            if (!top.hmjmfabc.projector.client.media.net.OnlineVideos.ready(w)) {
+                loadingPlaceholder(collector, ctx, w, mediaId, 0, 0x668833FF);
+                reportOnline(w);
+                return;
+            }
         }
         // 【27.1.2】装了 WaterMedia 且这个控件该用它时，画面由它解码（MP4 等就靠这条）
         if (top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.wants(w)) {
@@ -227,20 +291,51 @@ public final class WidgetRenderer {
                 return;
             }
             // WaterMedia 那边还没就绪（连源 / 建解码器）：用另一种颜色的占位，别和「内置加载中」混淆
-            loadingPlaceholder(collector, ctx, w, w.mediaId, 0, 0x6644CC99);
+            loadingPlaceholder(collector, ctx, w, mediaId, 0, 0x6644CC99);
             // 注：占位色偏绿，和内置后端的橙色占位区分开（一眼看出在用哪个后端）
             return;
         }
         long now = clientTimeMs();
         int frame = w.currentFrame(now);
         reportVideo(w, frame);
-        MediaCache.Frame f = MediaCache.videoFrame(w.mediaId, frame);
+        MediaCache.Frame f = MediaCache.videoFrame(mediaId, frame);
         if (f == null || !QuadCollector.textureReady(f.location)) {
             // 【⑫】整段视频的下载进度用 frame=0 的会话；帧下载用当前帧号
-            loadingPlaceholder(collector, ctx, w, w.mediaId, frame, 0x66CCAA33);
+            loadingPlaceholder(collector, ctx, w, mediaId, frame, 0x66CCAA33);
             return;
         }
         drawVideoQuad(collector, ctx, w, f.location);
+    }
+
+    /** 【27.1.3】「还没加载」只提示一次（每个控件一次），别每帧刷屏。 */
+    private static final java.util.Set<java.util.UUID> NOT_LOADED_LOGGED =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
+    private static void reportNotLoaded(VideoWidget w) {
+        if (w == null || w.id == null || !NOT_LOADED_LOGGED.add(w.id)) {
+            return;
+        }
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector][视频] 按需加载：控件 {} 还没被点过，先不下载（点世界里的视频左下角，"
+                        + "或进编辑器点「播放中/已暂停」即可开始）{}",
+                w.id.toString().substring(0, 8),
+                w.isOnline() ? "（在线源 " + w.sourceUrl + "）" : "");
+    }
+
+    /** 【27.1.3】在线视频每 3 秒最多报一行状态（下载进度、失败原因）。 */
+    private static final java.util.Map<java.util.UUID, Long> ONLINE_REPORT_MS = new java.util.HashMap<>();
+
+    private static void reportOnline(VideoWidget w) {
+        long now = System.currentTimeMillis();
+        Long last = ONLINE_REPORT_MS.get(w.id);
+        if (last != null && now - last < 3000L) {
+            return;
+        }
+        ONLINE_REPORT_MS.put(w.id, now);
+        top.hmjmfabc.projector.Projector.LOGGER.info("[Projector][在线视频] 控件 {} 状态：{}（链接 {}）",
+                w.id.toString().substring(0, 8),
+                top.hmjmfabc.projector.client.media.net.OnlineVideos.status(w),
+                w.sourceUrl);
     }
 
     /** 把一帧画到控件方框里（内置后端与 WaterMedia 后端共用同一份几何）。 */
@@ -267,8 +362,10 @@ public final class WidgetRenderer {
             return;
         }
         WM_REPORT_MS.put(w.id, now);
+        String name = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaName(w);
+        String id = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaId(w);
         top.hmjmfabc.projector.Projector.LOGGER.info("[Projector][视频] WaterMedia 播放中: 素材={}（{}）｜{}",
-                w.mediaName, w.mediaId.substring(0, Math.min(8, w.mediaId.length())),
+                name, id.substring(0, Math.min(8, id.length())),
                 top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.report());
     }
 
@@ -282,10 +379,12 @@ public final class WidgetRenderer {
             // 【rc-88】限流：内容变化 + 至少 2 秒一行。真出问题时日志要能一眼看穿，
             // 每秒十行的「帧=132/241」会把别的线索全冲掉。
             if (System.currentTimeMillis() - lastVideoReportMs < 2000L) return;
-            int[] sz = MediaCache.decodedSize(w.mediaId);
+            String reportId = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaId(w);
+            String reportName = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaName(w);
+            int[] sz = MediaCache.decodedSize(reportId);
             String line = String.format(java.util.Locale.ROOT,
                     "素材=%s 框=%.1fx%.1f 单位(%.2fx%.2f 格) 解码=%s 帧=%d/%d fps=%.1f 循环=%s",
-                    w.mediaName == null || w.mediaName.isEmpty() ? w.mediaId : w.mediaName,
+                    reportName == null || reportName.isEmpty() ? reportId : reportName,
                     w.w, w.h, w.w / 16, w.h / 16,
                     sz == null ? "未就绪" : (sz[0] + "x" + sz[1]),
                     frame, Math.max(1, w.frameCount), w.fps, w.loop);
@@ -389,7 +488,29 @@ public final class WidgetRenderer {
     public record WeatherState(ResourceLocation icon, String label, int argb) {
     }
 
+    /** 天气状态的缓存时刻（游戏 tick）。同一 tick 里所有天气控件共用一份。 */
+    private static long weatherTick = Long.MIN_VALUE;
+    private static WeatherState weatherCached;
+
+    /**
+     * 当前天气状态。
+     *
+     * <p>【27.2-pre-136】按 <b>tick</b> 缓存：天气一个 tick 才可能变一次，
+     * 而渲染一秒要问 60~120 次；下雪判断里还有一次生物群系查询
+     * （{@code level.getBiome(...)}）。以前是每帧每控件都走一遍完整判断。</p>
+     */
     public static WeatherState currentWeather() {
+        long now = currentGameTime();
+        if (weatherCached != null && now == weatherTick) {
+            return weatherCached;
+        }
+        WeatherState made = computeWeather();
+        weatherTick = now;
+        weatherCached = made;
+        return made;
+    }
+
+    private static WeatherState computeWeather() {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) {
             return new WeatherState(ICON_CLEAR, "\u6674\u5929", 0xFFFFFFFF);
@@ -563,8 +684,20 @@ public final class WidgetRenderer {
      */
     private static final double CHESS_LAYER = 0.015;
 
-    /** 棋盘的诊断只对「棋种+列数+行数+字体」变化时打一次，不刷屏。 */
-    private static final java.util.Map<java.util.UUID, String> CHESS_REPORT = new java.util.HashMap<>();
+    /**
+     * 棋盘的诊断只对「棋种+列数+行数+字体」变化时打一次，不刷屏。
+     *
+     * <p>【27.2-pre-136】改存<b>签名</b>而不是拼好的字符串：以前每帧都要先
+     * {@code String.format} 一整行再和上次比 —— 字符串造出来才发现没变。
+     * 现在只有签名真的变了才拼那一行。</p>
+     */
+    private static final java.util.Map<java.util.UUID, ChessSig> CHESS_REPORT = new java.util.HashMap<>();
+
+    /** 棋盘上报的轻量签名（构造它不做任何格式化）。 */
+    private record ChessSig(int kind, int cols, int rows, boolean intersections, double spacing,
+                            double w, double h, double fs, int pieces, String font) {
+    }
+
     /** 棋盘诊断的限流时间戳（毫秒）：斗蛐蛐自动对打时「棋子=」每手都变。 */
     private static final java.util.Map<java.util.UUID, Long> CHESS_REPORT_MS = new java.util.HashMap<>();
 
@@ -589,8 +722,21 @@ public final class WidgetRenderer {
         if (w.background != 0) {
             solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
         }
-        // 棋盘底色（压在所有格线之下）
-        solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.boardColor);
+        // 棋盘底色（压在所有格线之下）。【27.2-pre-136】默认是**全透明**：
+        // 用户要求「黑色底改成透明底」，所以这里只在玩家真的设了颜色时才填。
+        if ((w.boardColor >>> 24) != 0) {
+            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.boardColor);
+        }
+        // 【27.2-pre-136】棋盘外框（可调色；与音乐控件的白框同一套设计语言）。
+        // 画在**底色那一层**（dBase）：底色默认透明，那里空着，不会和格线/高亮抢深度。
+        if (w.showBorder && (w.borderColor >>> 24) != 0) {
+            double bt = Math.max(0.5, Math.min(Math.min(w.w, w.h) * 0.022, 1.6));
+            int bc = QuadCollector.withAlpha(w.borderColor, w.alpha);
+            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + bt, bc);
+            solidRect(collector, ctx, w, w.x, w.y + w.h - bt, w.x + w.w, w.y + w.h, bc);
+            solidRect(collector, ctx, w, w.x, w.y + bt, w.x + bt, w.y + w.h - bt, bc);
+            solidRect(collector, ctx, w, w.x + w.w - bt, w.y + bt, w.x + w.w, w.y + w.h - bt, bc);
+        }
 
         // ---- 几何布局：交叉点式 vs 格心式 ----
         // 【唯一来源】几何与「点位中心」都由 ChessWidget 提供，渲染与命中检测共用，
@@ -663,8 +809,9 @@ public final class WidgetRenderer {
         if (w.selCol >= 0 && w.selCol < cw && w.selRow >= 0 && w.selRow < ch) {
             double half = spacing * (intersections ? 0.46 : 0.5);
             double[] c = w.centerOf(w.selCol, w.selRow);
+            // 白色（与格线/边框同一套）；比「最后一手」更亮一点以示区别
             solidRect(collector, ctxMark, w, c[0] - half, c[1] - half,
-                    c[0] + half, c[1] + half, 0x90FFD479);
+                    c[0] + half, c[1] + half, 0x99FFFFFF);
         }
 
         // ---- 【rc-84】合法落点「着重显示」----
@@ -725,13 +872,19 @@ public final class WidgetRenderer {
 
         // 一次性诊断：棋类控件以前难查（画了 N 个四边形却看不出内容），
         // 所以把「到底算了什么」落一行日志。只在关键参数变化时打印。
-        String report = String.format(java.util.Locale.ROOT,
-                "%s %dx%d %s 间距=%.2f 框=%.1fx%.1f 字号=%.1f 棋子=%d 字体=%s",
-                top.hmjmfabc.projector.common.game.GameKind.name(g.kind), cw, ch,
-                intersections ? "交叉点式" : "格心式",
-                spacing, w.w, w.h, fs, pieces,
-                font == null ? "null!!" : FontManager.displayName(w.fontId));
-        if (!report.equals(CHESS_REPORT.put(w.id, report))) {
+        // 【27.2-pre-136】先比轻量签名，只有真的变了才拼日志串
+        ChessSig sig = new ChessSig(g.kind, cw, ch, intersections, spacing, w.w, w.h, fs,
+                pieces, font == null ? "" : FontManager.displayName(w.fontId));
+        String report = null;
+        if (!sig.equals(CHESS_REPORT.put(w.id, sig))) {
+            report = String.format(java.util.Locale.ROOT,
+                    "%s %dx%d %s 间距=%.2f 框=%.1fx%.1f 字号=%.1f 棋子=%d 字体=%s",
+                    top.hmjmfabc.projector.common.game.GameKind.name(g.kind), cw, ch,
+                    intersections ? "交叉点式" : "格心式",
+                    spacing, w.w, w.h, fs, pieces,
+                    font == null ? "null!!" : FontManager.displayName(w.fontId));
+        }
+        if (report != null) {
             // 关键异常（一个子都没画出来 / 字体没找到 / 间距太小）永远立刻打；
             // 其余情况限流：斗蛐蛐自动对打时「棋子=」每手都变，不限流会一直刷日志。
             long now = System.currentTimeMillis();
@@ -754,10 +907,43 @@ public final class WidgetRenderer {
     // 工具
     // ------------------------------------------------------------------
 
-    /** 生成一个把颜色设为指定 ARGB 的格式化代码前缀。 */
+    /**
+     * 生成一个把颜色设为指定 ARGB 的格式化代码前缀。
+     *
+     * <p>【27.2-pre-136】**必须记忆化**：它每帧会被调用几十次（一个棋盘 32 个棋子、
+     * 排行榜每行三次），而 {@code String.format} 是 Java 里最慢的常用方法之一。
+     * 更要紧的是：返回同一个字符串实例之后，「文字排版缓存」的键才会命中 ——
+     * 以前每帧都造一个新字符串，等于每帧每段文字都强制重新排版。</p>
+     */
     public static String colorPrefix(int argb) {
-        return "&#" + String.format(java.util.Locale.ROOT, "%06X", argb & 0xFFFFFF);
+        int slot = (argb * 0x9E3779B1) >>> 26;
+        for (int i = 0; i < COLOR_CACHE_SIZE; i++) {
+            int idx = (slot + i) & (COLOR_CACHE_SIZE - 1);
+            String v = COLOR_CACHE_VAL[idx];
+            if (v == null) {
+                break;
+            }
+            if (COLOR_CACHE_KEY[idx] == argb) {
+                return v;
+            }
+        }
+        String made = "&#" + String.format(java.util.Locale.ROOT, "%06X", argb & 0xFFFFFF);
+        for (int i = 0; i < COLOR_CACHE_SIZE; i++) {
+            int idx = (slot + i) & (COLOR_CACHE_SIZE - 1);
+            String v = COLOR_CACHE_VAL[idx];
+            if (v == null || v.equals(made)) {
+                COLOR_CACHE_KEY[idx] = argb;
+                COLOR_CACHE_VAL[idx] = made;
+                break;
+            }
+        }
+        return made;
     }
+
+    /** colorPrefix 的开放寻址小缓存（64 项；同时用到的颜色不可能这么多）。 */
+    private static final int COLOR_CACHE_SIZE = 64;
+    private static final int[] COLOR_CACHE_KEY = new int[COLOR_CACHE_SIZE];
+    private static final String[] COLOR_CACHE_VAL = new String[COLOR_CACHE_SIZE];
 
     /** 把 ARGB 近似映射到 16 色代码（保留给以后可能用到的场景）。 */
     public static int nearestLegacyCode(int argb) {

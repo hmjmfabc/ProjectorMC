@@ -43,10 +43,14 @@ pkg() { # $1=dir $2=fqcn
 pkg v21 top.hmjmfabc.projector.client.media.T21
 pkg v23 top.hmjmfabc.projector.client.media.T23
 pkg v24 top.hmjmfabc.projector.client.media.T24
-pkg v25 top.hmjmfabc.projector.client.media.T25
 pkg v26 top.hmjmfabc.projector.client.media.T26
 pkg v27 top.hmjmfabc.projector.client.media.T27
 pkg v28 top.hmjmfabc.projector.client.music.T28
 pkg v29 top.hmjmfabc.projector.client.media.wm.T29
+pkg v32 top.hmjmfabc.projector.client.media.T32
+run v30 T30
+run v34 T34
+run v35 T35
+run v36 T36
 
 echo "--- 失败套件数: $fail ---"

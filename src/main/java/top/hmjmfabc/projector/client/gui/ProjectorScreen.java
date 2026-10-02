@@ -119,4 +119,33 @@ public abstract class ProjectorScreen extends Screen {
             w.active = false;
         }
     }
+
+    /**
+     * 取语言文件里的一条文本，并去掉里面的 {@code §} 颜色码。
+     *
+     * <p>为什么需要它：{@code §c…} 这类格式码是给**聊天栏**用的（那里由
+     * {@code Component} 渲染管线解析），而界面上我们用 {@code drawString} +
+     * 自己的配色画文字，格式码会原样变成两个奇怪的字符。
+     * 所以界面用 {@code plainLang(...)}，聊天用 {@code Component.translatable(...)}。</p>
+     *
+     * @param key      语言文件键
+     * @param fallback 取不到时的兜底文本（例如资源包缺这一条）
+     */
+    protected static String plainLang(String key, String fallback) {
+        try {
+            String s = net.minecraft.network.chat.Component.translatable(key).getString();
+            StringBuilder b = new StringBuilder(s.length());
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c == '\u00a7' && i + 1 < s.length()) {
+                    i++;
+                    continue;
+                }
+                b.append(c);
+            }
+            return b.length() == 0 ? fallback : b.toString();
+        } catch (Throwable t) {
+            return fallback;
+        }
+    }
 }
