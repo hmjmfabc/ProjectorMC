@@ -7,7 +7,7 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.21.1-green.svg)
 ![NeoForge](https://img.shields.io/badge/NeoForge-21.1.x-orange.svg)
 
-**当前版本：27.2**（开发期代号 `27.2-stability-testing`）· 仓库：<https://github.com/hmjmfabc/ProjectorMC>
+**当前版本：27.2（正式版）** · 仓库：<https://github.com/hmjmfabc/ProjectorMC>
 
 ---
 

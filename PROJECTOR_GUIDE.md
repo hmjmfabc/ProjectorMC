@@ -6,7 +6,7 @@
 > - 命名空间：`projector`　包名：`top.hmjmfabc.projector`
 > - 加载器：NeoForge（Minecraft 1.21.1）
 > - 作者：Hmjmfabc
-> - 版本：**27.2**（开发期代号 `27.2-stability-testing`，不显示 Build 号）
+> - 版本：**27.2**（正式版）
 > - 鸣谢：使用 DeepSeek v4.1 Flash 与 DeepSeek Harness 编写。灵感来源于游戏
 >   *Dancing Line* 与 *Through The Fog* 的关卡内百分比标记。
 
