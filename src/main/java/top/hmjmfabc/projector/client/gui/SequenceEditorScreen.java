@@ -6,7 +6,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
-import net.neoforged.neoforge.network.PacketDistributor;
+import top.hmjmfabc.projector.compat.neo.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.client.ClientPermissions;
 import top.hmjmfabc.projector.common.Plane;

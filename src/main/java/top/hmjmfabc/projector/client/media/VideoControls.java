@@ -58,7 +58,7 @@ public final class VideoControls {
                 args.putLong("durationMs", durationMs);
             }
         }
-        net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+        top.hmjmfabc.projector.compat.neo.network.PacketDistributor.sendToServer(
                 new top.hmjmfabc.projector.network.Payloads.WidgetAction(plane.id, w.id, "toggle", args));
         top.hmjmfabc.projector.Projector.LOGGER.info(
                 "[Projector][视频] 世界内点击播放键 平面={} 控件={} {}（位置 {}ms / {}ms）",
@@ -84,7 +84,7 @@ public final class VideoControls {
         if (duration > 0) {
             args.putLong("durationMs", duration);
         }
-        net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+        top.hmjmfabc.projector.compat.neo.network.PacketDistributor.sendToServer(
                 new top.hmjmfabc.projector.network.Payloads.WidgetAction(plane.id, w.id, "seek", args));
         top.hmjmfabc.projector.Projector.LOGGER.info(
                 "[Projector][视频] 世界内调进度 {}%（{}ms / {}ms）平面={} 控件={}",
@@ -140,6 +140,9 @@ public final class VideoControls {
 
     /** 记下「我要加载这个控件」；每次点击都会调到。 */
     public static void request(UUID widgetId) {
+        // 【27.2.4-snapshot-203】点播放键 = 玩家明确要"再试一次" ⇒ 清掉失败计数与冷却，
+        // 否则一旦进过冷却，玩家点多少次都还是占位块（实测踩过）。
+        top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.retryNow(widgetId);
         if (widgetId != null) {
             REQUESTED.put(widgetId, Boolean.TRUE);
         }

@@ -367,7 +367,8 @@ public class LoginScreen extends Screen {
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         InputConstants.Key mouseKey = InputConstants.getKey(keyCode, scanCode);
-        if (this.getMinecraft().options.keyInventory.isActiveAndMatches(mouseKey) && (usernameInput.isFocused() || passwordInput.isFocused())) {
+        // 【Fabric 移植】isActiveAndMatches 是 NeoForge 补丁方法（原版没有）⇒ 用原版的 matches。
+        if (this.minecraft.options.keyInventory.matches(keyCode, scanCode) && (usernameInput.isFocused() || passwordInput.isFocused())) {
             return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);

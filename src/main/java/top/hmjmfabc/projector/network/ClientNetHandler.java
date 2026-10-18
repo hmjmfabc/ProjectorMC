@@ -1,7 +1,7 @@
 package top.hmjmfabc.projector.network;
 
 import net.minecraft.client.Minecraft;
-import net.neoforged.neoforge.network.handling.IPayloadContext;
+import top.hmjmfabc.projector.compat.neo.network.handling.IPayloadContext;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.client.PlaneCache;
 import top.hmjmfabc.projector.client.SelectionState;

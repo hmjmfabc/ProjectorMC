@@ -1,6 +1,6 @@
 package top.hmjmfabc.projector.client.web;
 
-import net.neoforged.fml.ModList;
+import top.hmjmfabc.projector.compat.fml.ModList;
 import top.hmjmfabc.projector.Projector;
 
 import java.lang.reflect.Method;

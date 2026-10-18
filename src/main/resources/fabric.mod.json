@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "projector",
+  "version": "${version}",
+  "name": "投影仪 | Projector",
+  "description": "万物皆屏幕！\n\n投影仪（Projector）让你可以在任何平面（完整方块墙、铁砧顶面、工作台侧面、楼梯……）上粘贴图片、播放视频、书写任意字体的文字，并在上面摆放各种特殊控件：文本、图片、视频、音乐、网页、时钟、天气、百分比进度、计时器、排行榜、棋类游戏。\n\n字号与图片大小可无极调节、方向可任意摆放，操作方式接近 P 图与视频剪辑。\n\n· U 键圈选准心所指的平面，Esc 取消，再次按 U 打开平面对话框（命名 / 内容保护 / 转让 / 删除）；\n· 文本支持自定义 TTF 字体、& 格式化代码与调色盘，还能开启「打字」动画；\n· 图片 / 视频从 .minecraft/projector/media/ 导入；视频由可选前置 WaterMedia 播放，也可直接粘贴 B 站链接等在线视频；\n· 网页控件：在平面上显示网页（可选前置 MCEF），世界里左键操作页面、按 I 输入文字；\n· 音乐控件：本地音频与网易云音乐，世界里直接点播放键即可启停，带歌词与波形；\n· 流程（时间轴）：给控件编排入场 / 出场 / 循环动画；\n· 棋类游戏：井字棋 / 五子棋 / 象棋 / 围棋 / 国际象棋；\n· 内容保护、创建者转让 / 删除，管理员与创建者分级权限；\n· 完整支持 Android（触控启动器）与低配设备。\n\n使用 DeepSeek v4.1 Flash 与 DeepSeek Harness 编写。\n灵感来源于游戏 Dancing Line 与 Through The Fog 的关卡内百分比标记。",
+  "authors": [
+    "Hmjmfabc"
+  ],
+  "contact": {
+    "homepage": "https://github.com/hmjmfabc/ProjectorMC",
+    "sources": "https://github.com/hmjmfabc/ProjectorMC",
+    "issues": "https://github.com/hmjmfabc/ProjectorMC/issues"
+  },
+  "license": "Apache-2.0",
+  "icon": "logo.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "top.hmjmfabc.projector.fabric.ProjectorFabric"
+    ],
+    "client": [
+      "top.hmjmfabc.projector.fabric.ProjectorFabricClient"
+    ]
+  },
+  "accessWidener": "projector.accesswidener",
+  "mixins": [
+    "projector.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "1.21.1",
+    "java": ">=21"
+  },
+  "suggests": {
+    "watermedia": "*",
+    "mcef": "*",
+    "watermedia_android_bridge": "*",
+    "mcefdroid": "*"
+  }
+}

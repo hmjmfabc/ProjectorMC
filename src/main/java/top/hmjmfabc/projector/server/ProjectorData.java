@@ -52,7 +52,8 @@ public final class ProjectorData extends SavedData {
 
     public static ProjectorData get(net.minecraft.server.MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(
-                new SavedData.Factory<>(ProjectorData::new, ProjectorData::load), FILE_ID);
+                new SavedData.Factory<>(ProjectorData::new, ProjectorData::load,
+                        net.minecraft.util.datafix.DataFixTypes.LEVEL), FILE_ID);
     }
 
     /**

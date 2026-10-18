@@ -284,8 +284,11 @@ public final class AudioDecoder {
                     // 仍然**直接 new 这个类**，不走 ServiceLoader（jar-in-jar 的 SPI 不可控）。
                     case AAC -> new net.sourceforge.jaad.spi.javasound.AACAudioFileReader()
                             .getAudioInputStream(in);
-                    // WAV/AIFF/AU 由 JDK 自带 provider 处理，不需要额外依赖
-                    case WAV -> AudioSystem.getAudioInputStream(in);
+                    // 【WAV 修复 · 27.2.4-snapshot-202】不再用 AudioSystem 的 provider 搜索：
+                    // 内嵌的 javasound-aac 一在 classpath 上，JDK 那句就会对 WAV 抛
+                    // UnsupportedAudioFileException ⇒ 玩家的 .wav 一律放不出来（已实测定位）。
+                    // WavReader 自己按 RIFF 读头并把 8/24/32 位与 float 统一转成 16 位 PCM。
+                    case WAV -> WavReader.open(in);
                     default -> null;
                 };
                 if (stream != null) {

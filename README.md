@@ -1,153 +1,174 @@
-# 投影仪 / Projector
+# 投影仪 / Projector —— Fabric 1.21.1 版
 
-> **万物皆屏幕！**
-> 在 Minecraft 里，把任意平面变成可以贴图、放视频、写字的屏幕。
-
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Minecraft](https://img.shields.io/badge/Minecraft-1.21.1-green.svg)
-![NeoForge](https://img.shields.io/badge/NeoForge-21.1.x-orange.svg)
-
-**当前版本：27.2（正式版）** · 仓库：<https://github.com/hmjmfabc/ProjectorMC>
+> 本目录是 **Fabric 1.21.1** 的移植版，源自 NeoForge 版 `27.2.4`（正式版）。
+> 当前：**`27.2.4`（正式版，不带 Build 号）**；产物：`build/libs/projector-fabric-1.21.1-27.2.4-all.jar`。
+> 覆盖移植线的 snapshot-1 / snapshot-2 两个快照构建，见 `CHANGELOG.md`。
+> 模组功能与 NeoForge 版**完全一致**（164 个业务源码文件一行业务逻辑都没改，见下文「移植方式」）。
 
 ---
 
-## 这是什么
+## 1. 玩家怎么装
 
-**投影仪（Projector）** 让你在任意平面（完整方块墙、铁砧顶面、工作台侧面、楼梯面……）上
-粘贴图片、播放视频、书写任意字体的文字、在平面上显示网页与播放音乐，
-并在上面摆放各种特殊控件：时钟、天气、百分比进度、计时器、排行榜、棋类游戏。
-
-字号与图片大小**无极调节**，方向**任意摆放**，操作方式接近 P 图与视频剪辑。
-
-## 主要功能
-
-| 分类 | 内容 |
+| 需要 | 说明 |
 |---|---|
-| 平面 | 任意方块表面（含楼梯等不完整平面）、U 键圈选、平面对话框（命名 / 内容保护 / 转让 / 删除） |
-| 控件 | 文本、图片、视频、**音乐**、**网页**、时钟、天气、百分比进度、计时器、排行榜、棋类游戏 |
-| 文字 | 自定义 TTF 字体、无极字号、任意旋转、多行排版、`&4`/`&l` 等格式化代码、`&z` 彩色渐变、`&s..e..` 双色渐变、调色盘 |
-| 视频 | **MP4 / MKV / WebM / MOV / 直播流等直接播放**，由可选前置 **[WaterMedia](https://modrinth.com/mod/watermedia)** 负责（**27.2 起内置解码器与转换器已全部删除**，也不再有 `.mjpg` / `.zip` 帧序列格式；没装 WaterMedia 时「新增视频」入口是灰的）。另有**在线视频**：直接粘贴 B 站 / 番剧 / 直播 / 任意直链 |
-| 网页 | **在平面上显示网页**（可选前置 **[MCEF](https://github.com/CinemaMod/mcef)**）：底部 `← → ⟳ ⌂` 小按钮与音乐控件同款外观；世界里**左键点页面**（链接 / 按钮 / 输入框）、**按 I 向网页输入文字**、**右键打开编辑器**；地址只认 `http/https`，服务端只存链接。安卓端需要配套的兼容层与一个自备的外部 Chromium（见手册 §5.17） |
-| 音乐 | 圆角矩形播放条（播放键 + 语音条式波形 + 歌名/歌词 + 时间）；本地音频（MP3 / FLAC / WAV / M4A / AAC）与**网易云音乐**（关键字搜索或粘 ID / 分享链接）；世界里点播放键即可启停，所有人按距离远近听到，带歌词显示 |
-| 流程（时间轴） | 为控件编排出现 / 隐藏 / 移动 / 缩放 / 变色动画：**13 种入场 + 13 种出场 + 8 种循环**，带时间轴编辑器，以及一个「**选择动画…**」二级界面（每个动画都有**实时预览**） |
-| 特殊控件 | 时钟、天气、百分比进度、计时器（含绑定指令）、排行榜、**棋类游戏**（5 种，人机 / 双人 / AI 自走）、**音乐**（波形 + 歌词）、**网页** |
-| 外观 | 所有控件可无极调字号、旋转、透明度、层级；文本控件还有「**打字**」动画；音乐与棋盘支持**分部位调色**（进度色 / 边框色 / 格线色 / 棋盘底色 / 最后一手） |
-| 棋类 | 井字棋、五子棋、象棋、围棋、国际象棋；人机 / 双人 / 斗蛐蛐（AI 自走）；三档 AI |
-| 联机 | 服务端权威数据、SHA-1 哈希校验与本地缓存复用、上传下载限速、日出站流量上限、两侧对称的传输日志 |
-| 平台 | 兼容 Android 触控启动器（FCL / PojavLauncher）与桌面端；**支持专用服务端（Dedicated Server）** |
+| Minecraft **1.21.1** | 必须与版本号一致 |
+| **Fabric Loader ≥ 0.16** | FCL / PojavLauncher 里选 Fabric 1.21.1 即可 |
+| **Fabric API** | 必装（`fabric-api-0.116.x+1.21.1` 或更新） |
+| 本模组 jar | **`-all.jar`**（含全部内嵌解码库），放进 `mods/` |
+| 可选：WaterMedia | 装了才能播放视频（MP4/WebM/MKV/直播流…） |
+| 可选：网页渲染前置 | 装了才能用「网页控件」；Android 上基本不可用（官方 README 明写） |
 
-完整玩法说明见 **[PROJECTOR_GUIDE.md](PROJECTOR_GUIDE.md)**；
-**27.2 相对 27.1.3 的全部改动**见 **[CHANGELOG-27.2.md](CHANGELOG-27.2.md)**；
-历次新增功能与修复见 **[CHANGELOG.md](CHANGELOG.md)**。
+- **客户端与服务端都要装**本模组（数据模型服务端权威）。
+- 安卓上若装了视频前置，还需要它的**安卓兼容层**，否则一旦播视频会崩游戏（日志最前面会有一段 ERROR 提示，这是原模组就有的引导）。
+- 配置文件：`config/projector-common.toml`（首次启动自动生成，含 59 个键与注释；键名与 NeoForge 版**完全一致**，改动后重启生效）。
 
-## 安装
+---
 
-1. 安装 **NeoForge 21.1.x**（Minecraft **1.21.1**）。
-2. 把 `projector-<版本>-all.jar` 放进 `mods/` 文件夹。
-   - **必须用 `-all.jar`**：它里面有 Jar-in-Jar 打包的音频解码库（mp3spi / jlayer /
-     tritonus-share / javasound-aac / jflac），缺少它们音乐控件无法解码音频。
-   - 可选前置：**WaterMedia**（视频）、**MCEF**（网页）。没装时对应控件的入口是灰的、
-     界面会明确说明，不会「选了却放不出来」。
-3. 联机时**客户端与服务端都要安装同一版本**（数据模型是服务端权威）。
-
-## 从源码构建
+## 2. 构建
 
 ```bash
-git clone https://github.com/hmjmfabc/ProjectorMC.git
-cd ProjectorMC
-mkdir -p libs            # 音乐控件要的两个解码库（见下）
-# 把 jflac-codec-1.5.3-SNAPSHOT.jar 放进 libs/
-./gradlew build          # 需要 JDK 21；首次会联网拉取 NeoForge 依赖与 mp3spi
+cd Source2-Fabric-1.21.1
+./gradlew build            # 首次需要联网：Gradle 9.8 + Loom + Minecraft + Fabric API
+./gradlew build --offline  # 依赖缓存好之后（日常用这个）
 ```
 
-音乐控件用到两个第三方解码库：`mp3spi`（含 jlayer / tritonus-share，Gradle 会从
-Maven Central 自动下载）与 `jflac-codec`（**不进仓库**，需自行放进 `libs/`，来源见 [NOTICE](NOTICE)）。
-缺少它们时**仍然能编译运行**，只是音乐控件无法解码音频。
-视频与网页**不需要任何编译期依赖**（WaterMedia / MCEF 都是运行期可选前置，只按公开 API 名字反射调用）。
+- 产物：`build/libs/projector-fabric-1.21.1-<版本>-all.jar`（**交付这个**）。
+- `-sources.jar` 只是源码包，玩家不要装。
+- 环境：JDK 21 + Gradle 9.8 + Fabric Loom 1.17.21 + **Mojang 官方映射（mojmap）**。
+  ⚠ 必须用 mojmap：上游源码全部按 mojmap 书写，换 Yarn 等于把 164 个文件里的每个 MC 类名都改一遍。
+- `libs/` 里的 `jflac-codec` / `javasound-aac` 与两个字体 ttf 一样**不入库**，需自行补齐（见仓库 README「从源码构建」）。
 
-> ⚠ **不要再把 `javasound-aac`（AAC/M4A 解码）加回来**：它和内置 JCodec 自带的那份
-> `net.sourceforge.jaad.*` 是**同名包**，两个 jar-in-jar 库导出同一个 JPMS 包会让
-> ModLauncher 在**启动阶段**直接崩（`java.lang.module.ResolutionException`）。
-> 因此音频格式只有 **MP3 / FLAC / WAV**。
+---
 
-产物：
+## 3. 移植方式（给维护者）
 
-```
-build/libs/projector-<版本>-all.jar   ← 发布用的完整包（含 JCodec）
-build/libs/projector-<版本>.jar       ← 不含依赖，不要用于安装
-```
-
-## 版本号规则
-
-| 阶段 | 形式 | 说明 |
-|---|---|---|
-| 快照版 | `27.x-snapshot-[Build]` | 添加并测试新客户端功能 |
-| 预发布版 | `27.x-pre-[Build]` | 测试服务端功能 |
-| 备选发布版 | `27.x-rc-[Build]` | 最后的稳定性测试 |
-| 正式版 | `27.x` 或 `27.x.y` | 正式发布，不显示 Build 号 |
-
-除正式版外，每构建一次 Build 号 +1。
-
-## 目录结构
+**原则：业务代码不动，只换"加载器那一层"。**
 
 ```
-src/main/java/top/hmjmfabc/projector/   模组源码
-  common/    平面模型、画布坐标、控件数据模型、棋类规则、流程数据
-  client/    渲染、媒体（缓存 / 下载 / 视频解码 / 转换）、界面、字体
-  server/    服务端存储、权限、出站计量、字体核验
-  network/   网络包与处理
-src/main/resources/                     资源（语言文件、模组图标、天气图标、mods.toml）
-  assets/projector/font/                字体目录（**仓库不含字体文件**，见下方说明）
-tmp/                                    纯逻辑验证脚本（可直接用 JDK 跑，见下）
-logo/                                   模组图标源文件
+src/main/java/top/hmjmfabc/projector/
+├── (上游 164 个文件的原有包结构，全部照搬)
+├── compat/            ← 【新增】NeoForge API 的替身（镜像 NeoForge 的包结构，便于逐文件对照）
+│   ├── event/         ← SubscribeEvent / IEventBus / EventBus（极简事件总线）
+│   ├── fml/           ← Mod / ModContainer / ModList / FMLEnvironment / FMLPaths /
+│   │                     CrashReportCallables / ModConfig / event.lifecycle.*
+│   ├── distmarker/    ← Dist / OnlyIn
+│   └── neo/           ← NeoForge（事件总线实例）/ common.ModConfigSpec（TOML 读写）/
+│                         network.* / event.* / client.event.* / client.settings…
+└── fabric/            ← 【新增】Fabric 入口与接线
+    ├── ProjectorFabric        主入口（构造 Projector、跑各阶段、登记网络）
+    ├── ProjectorFabricClient  客户端入口（构造 ProjectorClient、登记渲染/输入/按键/客户端命令）
+    ├── FabricCommonEvents     Fabric 回调 → 模组总线（服务端那一半）
+    ├── FabricNetworking       PayloadTypeRegistry / ServerPlayNetworking 登记
+    ├── FabricClientNetworking 客户端方向的接收器（**客户端专用类**，dist 隔离）
+    ├── Server/ClientPayloadContext  IPayloadContext 的两个实现
+    └── mixin/                 NeoForge 的 5 个"钩子事件"用 Mixin 补上（见下表）
 ```
 
-## 关于字体文件（仓库不含）
+### NeoForge 事件 → Fabric 对应物
 
-`src/main/resources/assets/projector/font/` 下的两个字体**不在本仓库中**，因为它们不是本项目的作品：
+| NeoForge | Fabric |
+|---|---|
+| `ServerTickEvent.Post` | `ServerTickEvents.END_SERVER_TICK` |
+| `ClientTickEvent.Post` | `ClientTickEvents.END_CLIENT_TICK` |
+| `ServerStartedEvent` / `ServerStoppingEvent` | `ServerLifecycleEvents.SERVER_STARTED` / `SERVER_STOPPING` |
+| `PlayerEvent.PlayerLoggedIn/Out` | `ServerPlayConnectionEvents.JOIN` / `DISCONNECT` |
+| `PlayerEvent.PlayerChangedDimensionEvent` | `ServerEntityWorldChangeEvents.AFTER_PLAYER_CHANGE_WORLD` |
+| `BlockEvent.BreakEvent` | `PlayerBlockBreakEvents.BEFORE`（返回 false = 取消） |
+| `RegisterCommandsEvent` | `CommandRegistrationCallback.EVENT` |
+| `RegisterClientCommandsEvent` | `ClientCommandRegistrationCallback.EVENT` |
+| `ClientPlayerNetworkEvent.LoggingIn/Out` | `ClientPlayConnectionEvents.JOIN` / `DISCONNECT` |
+| `RenderLevelStageEvent(AFTER_ENTITIES)` | `WorldRenderEvents.AFTER_ENTITIES` |
+| `RenderFrameEvent.Pre` | `WorldRenderEvents.START` |
+| `RenderGuiEvent.Post` | `HudRenderCallback` |
+| `RegisterKeyMappingsEvent` | `KeyBindingHelper.registerKeyBinding` |
+| `InputEvent.Key` / `MouseButton.Pre` / `MouseScrollingEvent` | **Mixin**：`KeyboardHandler.keyPress` / `MouseHandler.onPress` / `MouseHandler.onScroll` |
+| `InputEvent.InteractionKeyMappingTriggered` | **Mixin**：`Minecraft.startAttack` / `startUseItem` |
+| `ScreenEvent.Opening` | **Mixin**：`Minecraft.setScreen` |
+| `ClientChatEvent` | **Mixin**：`ChatScreen.handleChatInput` |
+| `FMLCommonSetupEvent` / `FMLClientSetupEvent` | 入口里直接分发（`enqueueWork` = `Minecraft.execute`） |
+| `PayloadRegistrar.playToServer/playToClient` | `PayloadTypeRegistry.playC2S/playS2C` + `Server/ClientPlayNetworking.registerGlobalReceiver` |
+| `PacketDistributor.sendToPlayer/sendToServer` | `ServerPlayNetworking.send` / `ClientPlayNetworking.send` |
+| `ModConfigSpec`（TOML 配置） | `compat.neo.common.ModConfigSpec` 自实现（同键名、同路径、同夹取语义） |
+| `accesstransformer.cfg` | `projector.accesswidener`（一一对应） |
+| `jarJar` | Loom `include`（嵌进 `META-INF/jars/`，Fabric Loader 会把非模组的嵌套 jar 加入 classpath） |
 
-- `minecraft.ttf`：Minecraft 自带的字体资源（Mojang 资产）；
-- `caviar_dreams.ttf`：第三方字体（Caviar Dreams，版权归其作者）。
+### 没有 Mixin 就要命的地方（记录一下）
 
-想从源码构建出与官方发布完全一致的包，请自行把这两个文件放进该目录；
-缺少时仍可正常编译运行，文字会退回 Minecraft 自带字体渲染。
-官方发布的 `-all.jar` 中已包含它们。
+- `startAttack`/`startUseItem` 里 `setSwingHand(false)` 是**只读的**：逐处核对过 10 个调用点，
+  全部紧跟 `setCanceled(true)`，而"取消"本身就让原版那一步不发生 ⇒ 挥手自然不会播。
+- `isPickBlock` 没接线：它的值只进日志，不改变任何分支（`WebInput.press(...)` 的第 4 个参数）。
 
-## 验证脚本
+---
 
-项目带一套**纯逻辑验证**（不需要启动游戏）：用真实的 Minecraft + NeoForge 当 classpath，
-直接跑生产代码并断言行为。
+## 4. 与 NeoForge 版的差异（全部是加载器层，功能不变）
 
-```bash
-bash tmp/run-verify.sh tmp/v6 T6     # 跑单个套件
-bash tmp/run-all.sh                  # 跑全部套件
-```
+1. **配置文件位置**：两边都是 `config/projector-common.toml`（NeoForge 的 COMMON 配置也是这里），键名与注释一致。
+2. **键位冲突上下文**：原版 `KeyMapping` 没有 NeoForge 的 `IN_GAME` 上下文参数 ⇒ 用原版 4 参数构造。
+   实际行为等价（世界里能按、界面里不生效），`ClientInputHandler` 本来就有 `mc.screen != null` 保护。
+3. **`/nmbl server level set <等级>`**：NeoForge 的 `EnumArgument` 在 Fabric 侧没有等价物（自定义命令参数类型
+   必须注册进 `ArgumentTypeInfos` 才能随命令树同步，1.21.1 的注册入口是私有的）⇒ 改用 `StringArgumentType`
+   + `suggests` 补全 + 解析失败时 `sendFailure` 列出可选取值。功能与提示都不缺。
+4. **`/nmbl login`（客户端命令）**：Fabric 的客户端命令源类型是 `FabricClientCommandSource` ⇒ 用
+   `ClientCommandManager.literal(...)` 建树（原来的 `ClientLoginCommand` 因此没人调用，已删除，避免死代码）。
+5. **协议版本**：NeoForge 的 `registrar(version)` 会做版本协商；Fabric 没有这一层 ⇒ 版本号只进日志。
+   两端版本不一致时不会像 NeoForge 那样拒绝连接。
+6. **`SavedData.Factory`**：原版只有 3 参构造（含 `DataFixTypes`）⇒ 三处存档数据显式传
+   `DataFixTypes.LEVEL`（Fabric 官方对自定义存档数据的推荐值；对本模组的自定义键无影响）。
+7. **`Player#getPermissionLevel`**：原版是 `protected` ⇒ 用 access widener 放开（对应 NeoForge 的补丁）。
+8. **`Screen#getMinecraft` / `KeyMapping#getKey` / `KeyMapping#isActiveAndMatches`**：都是 NeoForge 的补丁方法
+   ⇒ 换成原版等价写法（`this.minecraft` / `saveString()` / `matches(keyCode, scanCode)`）。
+9. **Mixin 目标名**：Loom 1.17 在 `remapJar` 阶段**直接改写**混入类里的字符串目标（实测
+   `keyPress→method_1466`、`setScreen→method_1507`、`startAttack→method_1536`、`getDetails→method_555`），
+   所以 jar 里**不需要 refmap**，也没有生成。
+10. **`IPayloadContext.enqueueWork`**：已经在主线程就地执行，否则投递给主线程（原版语义一致）。
 
-> 注意：脚本默认按 Termux/Android 的 Gradle 缓存路径编写，其它环境请按需调整
-> `run-verify.sh` 里的缓存路径。
+---
 
-## 许可证
+## 5. 验证（本轮实际做过什么）
 
-本项目以 **Apache License 2.0** 发布，见 [LICENSE](LICENSE)；第三方组件与资源的归属见 [NOTICE](NOTICE)。
+| 验证项 | 结果 |
+|---|---|
+| 全量编译（214 个 java 文件 / 164 个业务文件） | ✅ `BUILD SUCCESSFUL` |
+| **真实启动专用服务端**（`runServer`，带本模组） | ✅ 起服成功（`Done (1.342s)`），日志：`本端=DEDICATED_SERVER`、网络登记 `C2S 6 / S2C 6`、`/nmbl server` 注册、服务端就绪并载入平面数据、日出站上限 10 GB（配置读对了） |
+| dist 隔离（公共代码不碰客户端类） | ✅ 服务端实跑证明；静态审计也过（公共入口零 `net.minecraft.client.*` 引用） |
+| 配置生成 | ✅ 59 个键 / 8 个段落，键名与 NeoForge 版一致 |
+| 事件接线覆盖（26 个监听类型逐一核对） | ✅ 100% 有真实触发点 |
+| 上游纯逻辑验证套件（39 个套件目录） | ✅ **38 套全通过 / 0 失败**；`v17` 是 NeoForge 专用（import NeoForge 网络类型）编不过，它的不变量已由上面的"服务端实跑"覆盖 |
+| 嵌套库同名包冲突（AGENTS §1.3） | ✅ 6 个内嵌库两两交集为空 |
+| access widener 生产重映射 | ✅ jar 内已是 `accesswidener v2 intermediary` |
+| Mixin 目标重映射 | ✅ 已核实为 intermediary 名字 |
 
-- **代码**：Apache-2.0
-- **内置的音频解码库**（只有音乐控件使用）：mp3spi / jlayer / tritonus-share 与
-  javasound-aac 为 **GNU LGPL 2.1**，jflac-codec 为 BSD 风格许可；
-  它们以**未经修改的独立 jar** 形式嵌在 `META-INF/jarjar/` 里，可以单独替换。
-  （JCodec 曾在 27.1.2 用于内置视频解码，**27.1.3 起已彻底移除**。）
-- **与 [WaterMedia](https://modrinth.com/mod/watermedia) 的兼容是「可选运行时互操作」**：
-  没有引用、编译或打包它的任何源码/二进制（它是 PolyForm Strict 许可），
-  只在检测到它已安装时，按它公开文档里的 API 名字**反射调用**。
-- **与 [MCEF](https://github.com/CinemaMod/mcef) 的兼容同样是「可选运行时互操作」**：
-  网页控件用它渲染网页，但本项目**不 import、不编译链接、不打包它的任何源码或二进制**
-  （它是 **LGPL-2.1**），只按公开 API 名做运行期反射；`NOTICE` 里写明了这条边界。
-- **音乐控件的播放实现参考/移植自 [网络音乐机 Net Music Mod](https://github.com/TartaricAcid/NetMusic)**
-  （MIT 许可）。**只有音乐模块引用了该项目**，其余功能均为本项目独立实现。
-- **`assets/projector/font/` 下的字体**：版权归各自作者，**不在**本项目的 Apache-2.0 授权范围内；
-  再分发前请自行确认其授权条款。
-- Minecraft、NeoForge 及其标识归各自所有者；本项目与 Mojang / Microsoft 无关联。
+---
 
-## 鸣谢
+## 5.1 顺手修掉的一个上游 bug（WAV 放不出来）
 
-使用 **DeepSeek v4.1 Flash** 与 **DeepSeek Harness** 编写。
-灵感来源于游戏 *Dancing Line* 与 *Through The Fog* 的关卡内百分比标记。
+内嵌的 **javasound-aac** 会在 classpath 上注册一个 `AudioFileReader`；只要它在，
+`AudioSystem.getAudioInputStream(InputStream)` 对 **WAV** 就一律抛
+`UnsupportedAudioFileException: Stream of unsupported format`。
+逐个库单测确认过：只加 mp3spi = `NoClassDefFoundError: TAudioFileReader`，
+只加 javasound-aac = 上面那个异常，jlayer / tritonus-share 单独加都正常。
+
+⇒ 也就是说：**音频库跟着模组走的时候（NeoForge 版的 jarJar 同样如此），玩家的 .wav 一直放不出来。**
+本移植版改用自带的 `client/music/WavReader`（按 RIFF 规范自己读头，把 8/16/24/32 位 PCM
+与 32 位 float 统一转成 16 位 PCM），**完全不碰 `AudioSystem` 的 provider 搜索**。
+实测：8/16/24/32 位 PCM 与 32 位 float 五种写法都能读出准确时长（10.000 s），
+非 WAV 输入干净拒绝；`tmp/v28`（音乐控件 184 项）在该 classpath 下由 **FAILED 2 项 → 全通过**。
+
+> 这条修复在共享代码里（`client/music/`）：**上游 NeoForge 线已经同步落成 `27.2.4-snapshot-202`**
+> （`Source2/build/libs/projector-27.2.4-snapshot-202-all.jar`），两条线的这个文件现在逐字节一致。
+
+## 6. 已知限制 / 等玩家实测
+
+- 视频仍需要外部解码（WaterMedia），网页控件仍需要外部前置 —— 与 NeoForge 版同一取舍。
+- 玩家侧还没实机进世界测过；**最需要实测的三件事**：①圈选/渲染与六朝向 ②世界里点视频/棋盘/网页 ③音乐控件（内嵌解码库是否被正确加载）。
+- 若音乐控件不出声、日志里出现 `NoClassDefFoundError: javazoom/...`，说明嵌套 jar 没进 classpath ⇒ 需要复核 `fabric.mod.json` 的 `jars` 段（本版已确认有 6 项）。
+
+---
+
+## 7. 许可与鸣谢
+
+- 代码 **Apache-2.0**（`LICENSE`）；内嵌第三方库许可见 `NOTICE`。
+- `assets/projector/font/` 的两个 ttf 是第三方资产，不进仓库（只在发布 jar 里）。
+- 使用 DeepSeek v4.1 Flash 与 DeepSeek Harness 编写。
+  灵感来源于游戏 Dancing Line 与 Through The Fog 的关卡内百分比标记。
+- 玩家手册见 `PROJECTOR_GUIDE.md`（与 NeoForge 版共用同一份）。

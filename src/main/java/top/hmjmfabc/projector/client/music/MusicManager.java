@@ -4,7 +4,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.network.PacketDistributor;
+import top.hmjmfabc.projector.compat.neo.network.PacketDistributor;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.ProjectorConfig;
 import top.hmjmfabc.projector.client.PlaneCache;
@@ -552,7 +552,7 @@ public final class MusicManager {
         noteOwnAction(key);
         CompoundTag args = new CompoundTag();
         args.putDouble("fraction", fraction);
-        net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+        top.hmjmfabc.projector.compat.neo.network.PacketDistributor.sendToServer(
                 new top.hmjmfabc.projector.network.Payloads.WidgetAction(plane.id, music.id, "seek", args));
         Projector.LOGGER.info("[Projector][音乐] 服务端进度落后于实际听到的位置，已回传一次进度校正"
                 + "（{}ms / {}ms，{}%）", heardMs, duration, Math.round(fraction * 100));

@@ -2,8 +2,8 @@ package top.hmjmfabc.projector.client.gui;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.client.event.RenderGuiEvent;
+import top.hmjmfabc.projector.compat.event.SubscribeEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.RenderGuiEvent;
 import top.hmjmfabc.projector.client.SelectionState;
 import top.hmjmfabc.projector.common.Plane;
 import top.hmjmfabc.projector.common.widget.Widget;

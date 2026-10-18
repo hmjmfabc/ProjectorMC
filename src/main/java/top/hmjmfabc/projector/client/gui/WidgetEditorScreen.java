@@ -29,7 +29,7 @@ import top.hmjmfabc.projector.common.widget.VideoWidget;
 import top.hmjmfabc.projector.common.widget.WeatherWidget;
 import top.hmjmfabc.projector.common.widget.Widget;
 import top.hmjmfabc.projector.network.Payloads;
-import net.neoforged.neoforge.network.PacketDistributor;
+import top.hmjmfabc.projector.compat.neo.network.PacketDistributor;
 
 /**
  * 控件编辑器。

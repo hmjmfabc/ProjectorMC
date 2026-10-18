@@ -5,11 +5,11 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.entity.player.PlayerEvent;
-import net.neoforged.neoforge.event.level.BlockEvent;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
-import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import top.hmjmfabc.projector.compat.event.SubscribeEvent;
+import top.hmjmfabc.projector.compat.neo.event.entity.player.PlayerEvent;
+import top.hmjmfabc.projector.compat.neo.event.level.BlockEvent;
+import top.hmjmfabc.projector.compat.neo.event.server.ServerStartedEvent;
+import top.hmjmfabc.projector.compat.neo.event.server.ServerStoppingEvent;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.common.Plane;
 import top.hmjmfabc.projector.network.ServerNetHandler;
@@ -130,7 +130,7 @@ public final class ServerEvents {
 
     /** 每秒清理一次过期的媒体上传会话（避免长时间占用几十 MB 内存）。 */
     @SubscribeEvent
-    public void onServerTick(net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) {
+    public void onServerTick(top.hmjmfabc.projector.compat.neo.event.tick.ServerTickEvent.Post event) {
         // 【rc-81】每个刻结算被合并掉的平面广播（同一平面 100ms 最多真发一次）
         ServerNetHandler.flushPendingBroadcasts();
         // 【27.2.2】流程播放：每刻查一次（最后一个片段播完就停 / 循环则从头再来）。

@@ -7,7 +7,8 @@ stair sides, slab tops, anvil surfaces, workstation faces - if a block has a fac
 images, video, music, a live clock, a scoreboard or a playable board game on it. No special screen
 block required: your existing build becomes the screen.
 
-Made for NeoForge 1.21.1 (NeoForge 21.1.x, Java 21). Client and server both need the mod.
+Runs on **both NeoForge 1.21.1 and Fabric 1.21.1** (Java 21). Same mod, same features, same data
+format — pick the jar that matches your loader. Client and server both need the mod.
 
 ---
 
@@ -22,6 +23,25 @@ Made for NeoForge 1.21.1 (NeoForge 21.1.x, Java 21). Client and server both need
   chess position.
 - **Built to survive real servers.** Content protection, delete protection, per-plane naming, creator
   transfer, upload quotas, distance-based syncing and de-duplicated media transfers.
+
+---
+
+## Which file do I need?
+
+Projector ships one build per mod loader. They are the same mod — same features, same widgets, same
+plane data format — you only need the one that matches the loader you play.
+
+| You play on | Download this file | Also required |
+| --- | --- | --- |
+| **NeoForge 1.21.1** (NeoForge 21.1.x) | `projector-<version>-all.jar` | nothing else |
+| **Fabric 1.21.1** | `projector-fabric-1.21.1-<version>-all.jar` | **Fabric Loader 0.16+** and **Fabric API** |
+
+- Both are published from the same source tree; the Fabric build lives on the
+  `1.21.1-Fabric` branch of the repository.
+- **Never install both jars at once** — pick one loader and one file.
+- Always use the **`-all`** jar: it contains the audio decoding libraries the mod needs.
+- A world can be opened by either loader in single-player; on a server, all players must use the
+  same loader as the server.
 
 ---
 
@@ -104,11 +124,14 @@ again when they leave, so a large world does not push every plane to everyone.
 
 ## Install
 
-1. Install **NeoForge 21.1.x** for **Minecraft 1.21.1**.
-2. Drop the **`-all`** jar into `mods/` on both the client and the server. The `-all` file contains the
-   audio and configuration libraries the mod needs; the other jar does not.
+1. Install the loader for **Minecraft 1.21.1**:
+   - **NeoForge 21.1.x** → use `projector-<version>-all.jar`, or
+   - **Fabric Loader 0.16+** → use `projector-fabric-1.21.1-<version>-all.jar` and also install
+     **Fabric API** (`fabric-api`, 0.116.x for 1.21.1 or newer).
+2. Drop that **`-all`** jar into `mods/` on both the client and the server. The `-all` file contains the
+   audio decoding libraries the mod needs; the other jar does not.
 3. Start the game. No setup is required.
-4. Optional, only if you want more:
+4. Optional, only if you want more (install the build that matches **your** loader):
    - **WaterMedia** - required for video playback.
    - **WaterMedia Android Bridge** - additional requirement on Android launchers (see Known limitations).
    - **MCEF** - required for the web page widget, desktop operating systems only.
@@ -147,7 +170,14 @@ are the values most servers end up touching.
 
 ## Compatibility
 
-- **Minecraft 1.21.1 / NeoForge 21.1.x**, Java 21.
+- **Minecraft 1.21.1**, Java 21, on either **NeoForge 21.1.x** or **Fabric Loader 0.16+**.
+  The Fabric build additionally needs **Fabric API**.
+- **Both loaders are feature-complete.** The two jars are built from the same source tree; the Fabric
+  build only replaces the loader-specific glue (events, networking, config file, keybinds, mixin hooks).
+  Configuration file and key names are identical on both: `config/projector-common.toml`, keys
+  `U` / `Esc` / `O` / `I`.
+- **Optional mods must match your loader too.** Install the NeoForge build of WaterMedia on NeoForge and
+  the Fabric build on Fabric; the same goes for the WaterMedia Android Bridge. Mixing them will not load.
 - **Iris and OptiFine-style shaders**: supported. Three render switches exist because shader packs treat
   brightness differently - `avoidFullBrightLight`, `realLightForWidgets` and `surfaceBias`.
 - **Sodium** and other performance mods: no known conflicts.
@@ -163,6 +193,9 @@ These are deliberate design decisions or hard platform limits, not bugs:
 
 - **No built-in video decoder.** Video needs **WaterMedia**. On Android you also need the
   **WaterMedia Android Bridge**, otherwise decoding fails - the mod warns you about this at startup.
+  On Fabric, use the Fabric builds of both (WaterMedia 2.1.x plus its Fabric Android Bridge); the
+  Android Bridge declares a hard dependency on a WaterMedia version range, so a mismatched pair refuses
+  to start rather than decoding badly.
 - **The web page widget does not work on Android.** MCEF requires a desktop Chromium runtime, so the
   widget reports that it is unavailable instead of pretending to play.
 - **One song, one position, for everybody.** Music and video progress are shared on purpose: a plane is a
@@ -192,10 +225,16 @@ The mod talks to the network only for features you deliberately use, and never s
 
 ## Version status
 
-- **27.2** is the current released line (NeoForge 1.21.1).
-- Later builds in the 27.2.2 series are testing builds: the web widget, the display frame configuration
-  screen, the music playlist screen and the NetEase login button are the features being polished. Fixed
-  details are listed in the changelog in the repository.
+- **`27.2.4` is the current release on both loaders**: `27.2.4` for **NeoForge 1.21.1**
+  (`projector-27.2.4-all.jar`) and `27.2.4` for **Fabric 1.21.1**
+  (`projector-fabric-1.21.1-27.2.4-all.jar`). Both carry the same feature set.
+  The Fabric build additionally contains two fixes that also shipped upstream as
+  `27.2.4-snapshot-202/203`: WAV audio playback and the video widget getting stuck on its
+  "cannot play" placeholder. Details are in the changelog.
+- **Fabric line**: source and changelog live on the `1.21.1-Fabric` branch of the repository.
+  The `main` branch is the NeoForge line; the two branches share all gameplay code.
+- Build numbers (`-snapshot-`, `-pre-`, `-rc-`, `-hotfix-`) are testing builds published for feedback;
+  they are not releases.
 
 ---
 
@@ -212,7 +251,7 @@ This mod started as a personal project and thanks:
 - **MCEF** - optional web renderer used by the web page widget. Not bundled.
 - Bundled helper libraries: jlayer, mp3spi, tritonus-share (LGPL-2.1), jflac (BSD), javasound-aac
   (LGPL-2.1) and night-config (LGPL-3.0). Full notices ship with the mod.
-- Minecraft, NeoForge and their logos are trademarks of their respective owners. This project is not
+- Minecraft, NeoForge, Fabric and their logos are trademarks of their respective owners. This project is not
   affiliated with, endorsed by or sponsored by Mojang or Microsoft.
 
 The mod's own code is licensed under **Apache-2.0**.
@@ -225,5 +264,6 @@ Dancing Line and Through The Fog.
 ## Links
 
 - Source code and full documentation: https://github.com/hmjmfabc/ProjectorMC
+- **Fabric 1.21.1 branch (source + changelog):** https://github.com/hmjmfabc/ProjectorMC/tree/1.21.1-Fabric
 - Bug reports and feature requests: https://github.com/hmjmfabc/ProjectorMC/issues
 - Net Music Mod, the origin of the music module: https://github.com/TartaricAcid/NetMusic

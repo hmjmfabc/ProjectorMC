@@ -4,10 +4,10 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.fml.loading.FMLEnvironment;
-import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
-import net.neoforged.neoforge.network.handling.IPayloadHandler;
-import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+import top.hmjmfabc.projector.compat.fml.loading.FMLEnvironment;
+import top.hmjmfabc.projector.compat.neo.network.event.RegisterPayloadHandlersEvent;
+import top.hmjmfabc.projector.compat.neo.network.handling.IPayloadHandler;
+import top.hmjmfabc.projector.compat.neo.network.registration.PayloadRegistrar;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.client.ClientPayloadHandlers;
 

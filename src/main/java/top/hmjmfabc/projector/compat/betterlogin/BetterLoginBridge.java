@@ -1,6 +1,6 @@
 package top.hmjmfabc.projector.compat.betterlogin;
 
-import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import top.hmjmfabc.projector.compat.neo.event.RegisterCommandsEvent;
 import top.hmjmfabc.projector.compat.betterlogin.command.ServerLoginCommand;
 import top.hmjmfabc.projector.compat.betterlogin.config.GeneralConfig;
 

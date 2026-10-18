@@ -398,7 +398,7 @@ public final class WebControls {
      */
     private static void sendAction(Plane plane, WebWidget w, int index) {
         try {
-            net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+            top.hmjmfabc.projector.compat.neo.network.PacketDistributor.sendToServer(
                     new top.hmjmfabc.projector.network.Payloads.WidgetAction(
                             plane.id, w.id, actionName(index), new CompoundTag()));
         } catch (Throwable t) {

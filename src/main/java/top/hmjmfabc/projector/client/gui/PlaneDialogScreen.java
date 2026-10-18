@@ -7,7 +7,7 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
-import net.neoforged.neoforge.network.PacketDistributor;
+import top.hmjmfabc.projector.compat.neo.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.client.ClientPermissions;
 import top.hmjmfabc.projector.client.SelectionState;

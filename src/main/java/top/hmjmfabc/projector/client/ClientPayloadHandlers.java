@@ -2,7 +2,7 @@ package top.hmjmfabc.projector.client;
 
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.neoforge.network.handling.IPayloadHandler;
+import top.hmjmfabc.projector.compat.neo.network.handling.IPayloadHandler;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.network.ClientNetHandler;
 import top.hmjmfabc.projector.network.Payloads;

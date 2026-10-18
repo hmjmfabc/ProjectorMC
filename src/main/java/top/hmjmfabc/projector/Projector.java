@@ -1,12 +1,12 @@
 package top.hmjmfabc.projector;
 
 import com.mojang.logging.LogUtils;
-import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.ModContainer;
-import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.config.ModConfig;
-import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
-import net.neoforged.neoforge.common.NeoForge;
+import top.hmjmfabc.projector.compat.event.IEventBus;
+import top.hmjmfabc.projector.compat.fml.ModContainer;
+import top.hmjmfabc.projector.compat.fml.common.Mod;
+import top.hmjmfabc.projector.compat.fml.config.ModConfig;
+import top.hmjmfabc.projector.compat.fml.event.lifecycle.FMLCommonSetupEvent;
+import top.hmjmfabc.projector.compat.neo.common.NeoForge;
 import org.slf4j.Logger;
 
 /**
@@ -43,10 +43,14 @@ public class Projector {
         // 【27.2.2 修】/nmbl server … 是**服务端命令**，必须在公共侧注册：
         // 以前它挂在客户端入口里（用的是公共事件 RegisterCommandsEvent），
         // 结果专用服务端上那条命令根本不存在。客户端命令另见 ClientCommandBridge。
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+        // 【Fabric 移植】addListener 多了一个显式的事件类型参数：Java 的 lambda 类里只有
+        // accept(Object)，NeoForge 靠泛型元数据猜类型的那套在 Fabric 侧不成立（详见 IEventBus 注释）。
+        top.hmjmfabc.projector.compat.neo.common.NeoForge.EVENT_BUS.addListener(
+                top.hmjmfabc.projector.compat.neo.event.RegisterCommandsEvent.class,
                 top.hmjmfabc.projector.compat.betterlogin.BetterLoginBridge::onRegisterCommands);
-        modEventBus.addListener(this::commonSetup);
-        modEventBus.addListener(top.hmjmfabc.projector.network.ProjectorNetwork::register);
+        modEventBus.addListener(FMLCommonSetupEvent.class, this::commonSetup);
+        modEventBus.addListener(top.hmjmfabc.projector.compat.neo.network.event.RegisterPayloadHandlersEvent.class,
+                top.hmjmfabc.projector.network.ProjectorNetwork::register);
 
         modContainer.registerConfig(ModConfig.Type.COMMON, ProjectorConfig.SPEC);
 
@@ -55,7 +59,7 @@ public class Projector {
         // 光看日志很难判断，这一行能让下一次排查省很多时间。
         LOGGER.info("[Projector] 投影仪已装载：万物皆屏幕！ 版本={} 构建={} 本端={}",
                 modContainer.getModInfo().getVersion(), BUILD_TAG,
-                net.neoforged.fml.loading.FMLEnvironment.dist);
+                top.hmjmfabc.projector.compat.fml.loading.FMLEnvironment.dist);
     }
 
     /** 安卓兼容模组 WATERMeDIA: Android Bridge 的 modid（我们只按 id 认它，不引用它的代码）。 */
@@ -165,7 +169,7 @@ public class Projector {
     /** 某个 modid 是否已加载；启动早期读不到就按「没装」算（只会少打一条提示）。 */
     private static boolean isModLoaded(String modId) {
         try {
-            return net.neoforged.fml.ModList.get().isLoaded(modId);
+            return top.hmjmfabc.projector.compat.fml.ModList.get().isLoaded(modId);
         } catch (Throwable t) {
             return false;
         }

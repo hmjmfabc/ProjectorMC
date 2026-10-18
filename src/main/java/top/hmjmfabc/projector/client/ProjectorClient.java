@@ -5,15 +5,17 @@ import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
-import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
-import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
-import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
-import net.neoforged.neoforge.client.event.TextureAtlasStitchedEvent;
-import net.neoforged.neoforge.common.NeoForge;
+import top.hmjmfabc.projector.compat.distmarker.Dist;
+import top.hmjmfabc.projector.compat.event.IEventBus;
+import top.hmjmfabc.projector.compat.fml.common.Mod;
+import top.hmjmfabc.projector.compat.fml.event.lifecycle.FMLClientSetupEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.ClientPlayerNetworkEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.ClientTickEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.RegisterClientCommandsEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.RenderGuiEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.RegisterKeyMappingsEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.RenderLevelStageEvent;
+import top.hmjmfabc.projector.compat.neo.common.NeoForge;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.ProjectorConfig;
 import top.hmjmfabc.projector.client.font.FontManager;
@@ -40,19 +42,22 @@ public final class ProjectorClient {
     public static final ResourceLocation WHITE_TEXTURE = Projector.id("dynamic/white");
 
     public ProjectorClient(IEventBus modBus) {
-        modBus.addListener(this::clientSetup);
-        modBus.addListener(ProjectorKeys::register);
-        NeoForge.EVENT_BUS.addListener(this::onRenderLevel);
+        // 【Fabric 移植】addListener 多一个显式事件类型参数（Java 的 lambda 类只有 accept(Object)，
+        // NeoForge 靠泛型元数据猜类型的那套在 Fabric 侧不成立，详见 compat.event.IEventBus 注释）。
+        modBus.addListener(FMLClientSetupEvent.class, this::clientSetup);
+        modBus.addListener(RegisterKeyMappingsEvent.class, ProjectorKeys::register);
+        NeoForge.EVENT_BUS.addListener(RenderLevelStageEvent.class, this::onRenderLevel);
         NeoForge.EVENT_BUS.register(new ClientInputHandler());
-        NeoForge.EVENT_BUS.addListener(top.hmjmfabc.projector.client.gui.ProjectorHud::onRenderGui);
-        NeoForge.EVENT_BUS.addListener(this::onLogin);
-        NeoForge.EVENT_BUS.addListener(this::onLogout);
+        NeoForge.EVENT_BUS.addListener(RenderGuiEvent.Post.class,
+                top.hmjmfabc.projector.client.gui.ProjectorHud::onRenderGui);
+        NeoForge.EVENT_BUS.addListener(ClientPlayerNetworkEvent.LoggingIn.class, this::onLogin);
+        NeoForge.EVENT_BUS.addListener(ClientPlayerNetworkEvent.LoggingOut.class, this::onLogout);
         // 【27.1.1】音乐控件的每 tick 调度（该不该出声、续播、音量跟随）
-        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.client.event.ClientTickEvent.Post event) ->
-                top.hmjmfabc.projector.client.music.MusicManager.tick());
+        NeoForge.EVENT_BUS.addListener(ClientTickEvent.Post.class,
+                (ClientTickEvent.Post event) -> top.hmjmfabc.projector.client.music.MusicManager.tick());
         // 【27.2.2】登录命令：客户端侧 /nmbl login 在这里注册；
         // 服务端侧 /nmbl server … 由公共侧（Projector 构造）注册 —— 见 BetterLoginBridge 的说明。
-        NeoForge.EVENT_BUS.addListener(
+        NeoForge.EVENT_BUS.addListener(RegisterClientCommandsEvent.class,
                 top.hmjmfabc.projector.compat.betterlogin.client.ClientCommandBridge::onRegisterClientCommands);
     }
 
@@ -93,8 +98,10 @@ public final class ProjectorClient {
         try {
             var cancel = top.hmjmfabc.projector.client.ProjectorKeys.KEY_CANCEL;
             var replay = top.hmjmfabc.projector.client.ProjectorKeys.KEY_SEQ_REPLAY;
-            boolean cancelOnOldDefault = cancel.getKey().getValue() == 73;   // 73 = GLFW_KEY_I
-            boolean replayTookOldKey = replay.getKey().getValue() == 73;
+            // 【Fabric 移植】原版 KeyMapping 没有 getKey()（那是 NeoForge 的补丁方法），
+            // 改用原版自带的 saveString()（例如 "key.keyboard.i"）做同样的判定。
+            boolean cancelOnOldDefault = "key.keyboard.i".equals(cancel.saveString());
+            boolean replayTookOldKey = "key.keyboard.i".equals(replay.saveString());
             if (cancelOnOldDefault && replayTookOldKey) {
                 cancel.setKey(com.mojang.blaze3d.platform.InputConstants.getKey(
                         "key.keyboard.escape"));

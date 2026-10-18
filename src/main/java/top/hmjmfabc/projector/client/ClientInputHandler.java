@@ -7,13 +7,13 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.client.event.ClientTickEvent;
-import net.neoforged.neoforge.client.event.InputEvent;
+import top.hmjmfabc.projector.compat.event.SubscribeEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.ClientTickEvent;
+import top.hmjmfabc.projector.compat.neo.client.event.InputEvent;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.neoforge.network.PacketDistributor;
+import top.hmjmfabc.projector.compat.neo.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.ProjectorConfig;
 import top.hmjmfabc.projector.client.gui.WidgetEditorScreen;
@@ -108,7 +108,7 @@ public final class ClientInputHandler {
      * </ul>
      */
     @SubscribeEvent
-    public void onScreenOpening(net.neoforged.neoforge.client.event.ScreenEvent.Opening event) {
+    public void onScreenOpening(top.hmjmfabc.projector.compat.neo.client.event.ScreenEvent.Opening event) {
         if (!(event.getNewScreen() instanceof net.minecraft.client.gui.screens.PauseScreen)) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.screen != null || mc.player == null || mc.level == null) return;
@@ -543,7 +543,7 @@ public final class ClientInputHandler {
      * 所以<b>平时聊天完全不受影响</b>。以 {@code /} 开头的命令一律放行。</p>
      */
     @SubscribeEvent
-    public void onClientChat(net.neoforged.neoforge.client.event.ClientChatEvent event) {
+    public void onClientChat(top.hmjmfabc.projector.compat.neo.client.event.ClientChatEvent event) {
         if (!webPendingText) {
             return;
         }
@@ -581,7 +581,7 @@ public final class ClientInputHandler {
      * <p>界面开着时一律不转发（与按键钩子同一条保护）：那时鼠标在操作 GUI。</p>
      */
     @SubscribeEvent
-    public void onRenderFrame(net.neoforged.neoforge.client.event.RenderFrameEvent.Pre event) {
+    public void onRenderFrame(top.hmjmfabc.projector.compat.neo.client.event.RenderFrameEvent.Pre event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null || mc.screen != null) {
             return;
