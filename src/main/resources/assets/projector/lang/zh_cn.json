@@ -1,7 +1,7 @@
 {
   "key.categories.projector": "投影仪 Projector",
   "key.projector.capture": "圈选平面 / 打开对话框 (U)",
-  "key.projector.cancel": "取消圈选 (I)",
+  "key.projector.cancel": "取消圈选 (Esc)",
   "key.projector.media_help": "显示媒体目录 (O)",
   "projector.msg.no_target": "§e准心没有对准任何方块面",
   "projector.msg.selection_cleared": "§7已取消圈选",
@@ -34,7 +34,7 @@
   "projector.msg.font_failed": "§c字体保存或哈希核验失败，已拒绝（详见服务端日志）",
   "projector.msg.font_not_on_server": "§c该字体未安装在服务端；请让管理员先在字体选择器里上传它",
   "projector.msg.seq_hint": "§7流程：在预览图里点中控件 → 按「添加到流程」→ 在时间轴上拖动长条（两头可拉）",
-  "projector.msg.seq_empty": "§7该平面还没有流程片段",
+  "projector.msg.seq_empty": "尚未添加流程",
   "projector.msg.seq_added": "§a已加入流程：%s",
   "projector.msg.seq_last_kept": "§7时间轴上最后那个片段不会出场，流程走完它会留在平面上",
   "projector.msg.chess_hint": "§7棋类游戏：右键控件 → 编辑 → 「打开对局界面…」即可下棋（六种棋共用这一个入口）",
@@ -64,5 +64,13 @@
   "projector.msg.web_no_page": "网页还没有画面：请确认 Termux 里的浏览器还在运行",
   "projector.msg.web_need_aim": "先把准心对准网页控件，再按 I 打字",
   "projector.msg.web_typing": "正在输入给网页：打完回车即送入（不会发到公屏）",
-  "projector.msg.web_world_hint": "§f左键操作，按 I 打字"
+  "projector.msg.web_world_hint": "§f左键操作，按 I 打字",
+  "key.projector.seq_replay": "重播流程 (I)",
+  "projector.msg.seq_replay": "正在重播流程",
+  "projector.widget.item": "展示框",
+  "projector.msg.item_placed": "已放入 %s",
+  "projector.msg.item_taken": "已取出 %s",
+  "projector.msg.item_empty_hand": "你手里没有这件物品",
+  "projector.msg.item_none_selected": "这个展示框还没有选定物品",
+  "projector.msg.item_need_admin": "只有管理员（权限等级 2 以上）能绑定指令"
 }

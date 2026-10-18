@@ -35,14 +35,33 @@ public final class PlanePermissions {
      * 是否管理员。
      *
      * <p>【用户要求】单人存档与联机房主，**无论有无作弊权限都视作管理员**：
-     * 这类玩家本来就能随手改存档／踢人，把他挡在权限门外只会让人困惑。
-     * 判定依据是「服务端不是独立服务器」（即集成服务器：单人存档或联机房间）。</p>
+     * 这类玩家本来就能随手改存档／踢人，把他挡在权限门外只会让人困惑。</p>
+     *
+     * <p>⚠【27.2.4-200 修】以前这里的判据是「服务端不是独立服务器」，而
+     * <b>{@code !isDedicatedServer()} 对「联机房间里每一个连进来的人」都为真</b> ——
+     * 于是任何一个通过局域网加入的客人都会拿到管理员：能改别人的平面、能开关删除保护、
+     * 能给计时器绑指令（那条指令以控制台权限执行）。现在改成只认<b>房主本人</b>，
+     * 其余人一律按权限等级判。</p>
      */
     public static boolean isAdmin(ServerPlayer player) {
         if (player == null) return false;
         if (player.hasPermissions(ADMIN_LEVEL)) return true;
-        // 集成服务器 = 单人存档 / 联机房间的房主；独立服务器（第三方服务器）不适用
-        return !player.server.isDedicatedServer();
+        return isHost(player);
+    }
+
+    /**
+     * 是不是<b>集成服务器的房主本人</b>（不是「所有连进来的人」）。
+     *
+     * <p>专用服务端永远返回 false；读不到判定时也返回 false（宁可多要权限，不可漏放行）。</p>
+     */
+    public static boolean isHost(ServerPlayer player) {
+        if (player == null || player.server == null) return false;
+        if (player.server.isDedicatedServer()) return false;
+        try {
+            return player.server.isSingleplayerOwner(player.getGameProfile());
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     public static boolean isCreator(Plane plane, UUID uuid) {
@@ -167,7 +186,7 @@ public final class PlanePermissions {
      */
     public static boolean canToggleDeleteProtection(ServerPlayer player) {
         if (player == null) return false;
-        if (!player.server.isDedicatedServer()) return true;   // 单人/联机房主
+        if (isHost(player)) return true;                        // 单人存档 / 联机房间的房主本人
         return opLevel(player) >= DELETE_PROTECT_LEVEL;
     }
 
@@ -187,6 +206,19 @@ public final class PlanePermissions {
      * {@code ServerNetHandler.imageLimitFor/videoLimitFor} 按身份另行判定</b>——
      * 两个判定必须成对出现，缺一个就会出现「谁都能传任意大小」。</p>
      */
+    /**
+     * 【27.2.4-200】能不能上传自定义字体。
+     *
+     * <p>以前这条走的是 {@link #canAddMedia}（媒体上传开关，默认对所有人开放），
+     * 于是**专用服务端上任何玩家都能往存档目录写 8 MB 字体文件**，而界面上那个按钮
+     * 是按「权限等级 4」置灰的 —— 客户端拦住不算数，这里必须真判一次。</p>
+     */
+    public static boolean canManageFonts(ServerPlayer player) {
+        if (player == null) return false;
+        if (player.hasPermissions(4)) return true;
+        return isHost(player);
+    }
+
     public static boolean canAddMedia(ServerPlayer player) {
         if (player == null) return false;
         if (!onlyAdminCanUpload()) return true;

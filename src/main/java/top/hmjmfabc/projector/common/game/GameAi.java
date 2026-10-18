@@ -100,7 +100,7 @@ public final class GameAi {
         // 收集「最后一轮算完」的根着法评分，供「正常档故意失误」使用
         java.util.List<int[]> lastScores = new java.util.ArrayList<>();
 
-        int maxDepth = GameDifficulty.maxDepth(difficulty, depthFor());
+        int maxDepth = GameDifficulty.maxDepth(difficulty, depthFor(), rules.kind());
         for (int depth = 1; depth <= maxDepth; depth++) {
             Move iterBest = null;
             int iterScore = Integer.MIN_VALUE;
@@ -125,7 +125,12 @@ public final class GameAi {
                 if (timedOut || nodes >= nodeCap) break;
                 idx++;
             }
-            if (iterBest != null) {
+            // 【27.2.4-200 修】只有「这一轮真的算完了」才采纳结果：
+            // 被 deadline/nodeCap 打断的那一轮里，某些子树返回的是原始 evaluate() 分
+            // （浅层静态分），与已搜到的分数混在一起比较毫无意义，
+            // 会把上一轮的完整结果覆盖成更差的着法（类注释明明写的是「用上一层的结果」）。
+            boolean roundDone = !timedOut && nodes < nodeCap;
+            if (iterBest != null && roundDone) {
                 best = iterBest;
                 bestScore = iterScore;
                 reachedDepth = depth;
@@ -198,7 +203,10 @@ public final class GameAi {
             if (GameDifficulty.threatExtension(difficulty) && !threatSeen && ply < 10
                     && opponentHasImmediateWin(board, side)) {
                 threatSeen = true;
-                int ext = -negamax(board, side, 2, alpha, beta, ply);
+                // 【27.2.4-200 修】这里**不许取负**：negamax 的返回值是「轮到走的那一方」的分数，
+                // 而我们没有落子、也没有换手（side 未变）⇒ 它已经就是本节点的分数。
+                // 以前写成 -negamax(...)：等于把「对手优势」当成本方优势 ⇒ 极限档反而主动送死。
+                int ext = negamax(board, side, 2, alpha, beta, ply);
                 threatSeen = false;
                 return ext;
             }

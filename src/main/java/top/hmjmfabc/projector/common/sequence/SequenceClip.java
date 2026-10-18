@@ -8,13 +8,22 @@ import java.util.UUID;
  * 【⑩】流程时间轴上的一个「片段」：某个控件从第几秒显示到第几秒，
  * 以及它进场、出场、循环时用什么动画。
  *
- * <p>时间统一用<b>秒</b>（浮点），时间轴范围 <b>0~999 秒</b>（用户要求）。
- * 片段的 {@code startSec/endSec} 会由编辑器夹在这个范围内。</p>
+ * <p>时间统一用<b>秒</b>（浮点）。{@link #MAX_SECONDS} 只是**安全阀**（防止异常数据
+ * 把时间轴撑到浮点精度之外），不是编辑器里能拖到的上限 ——
+ * 真正可拖动的范围是 {@code SequenceTrack.dynamicMaxSec()} 按当前片段**动态**算出来的
+ * （用户 27.2.2：把原来的固定 999 秒上限改成动态上限，并且「最高值越高越好」）。</p>
  */
 public final class SequenceClip {
 
-    /** 时间轴总长度（秒）。 */
-    public static final double MAX_SECONDS = 999.0;
+    /**
+     * 时间轴**硬上限**（秒）——纯粹的安全阀，约 11.5 天。
+     *
+     * <p>27.2.2 之前这里是 999 秒（用户当初要求的固定上限），现在是动态上限：
+     * 编辑器能拖多远由 {@code SequenceTrack.dynamicMaxSec()} 决定，
+     * 这个常量只在「有人塞了 1e30 秒进来」时兜底。浮点在 1e6 秒量级的精度约 0.06 秒，
+     * 对秒级时间轴足够。</p>
+     */
+    public static final double MAX_SECONDS = 1_000_000.0;
     /** 默认动画时长（秒）。用户原文：默认 0.5s。 */
     public static final double DEFAULT_ANIM_SECONDS = 0.5;
 

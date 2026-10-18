@@ -133,7 +133,6 @@ public final class MediaCache {
 
     private static final Map<String, Entry> IMAGES = new ConcurrentHashMap<>();
     private static final Map<String, Frames> VIDEO_FRAMES = new ConcurrentHashMap<>();
-    private static final Map<String, VideoSource> VIDEO_SOURCES = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------
     // 每个媒体的加载状态：一个对象装下「加载中 / 失败 / 重试次数 / 上次重试时间 / 已报警」
@@ -647,34 +646,12 @@ public final class MediaCache {
                 if (video) escalateToWholeIfNeeded(hash);
 
                 if (video) {
-                    // 1) 本地有完整视频文件：直接按帧解码
-                    // 【rc-84】byHash 现在也认「下载缓存里的整段视频」（hash.bin 与旧的 hash_f0.bin），
-                    // 所以这里不再需要自己拼 cacheDir 路径 —— 以前那条判断只认 hash.bin，
-                    // 旧缓存（hash_f0.bin）命中不了，于是把本地已有的整段视频又向服务端要了一遍。
-                    LocalMedia.MediaFile whole = LocalMedia.byHash(hash);
-                    boolean wholeIsVideo = whole != null;
-                    if (wholeIsVideo) {
-                        Path p = whole.path();
-                        VideoSource src = VIDEO_SOURCES.get(hash);
-                        if (src == null) {
-                            src = VideoSource.open(p);
-                            if (src != null) VIDEO_SOURCES.put(hash, src);
-                        }
-                        if (src == null) {
-                            markFailed(hash);
-                            return;
-                        }
-                        long td = System.nanoTime();
-                        ImageCodec.Decoded decoded = src.decode(frame);
-                        if (decoded == null) return;
-                        ImageCodec.Decoded sized = ImageCodec.downscale(decoded,
-                                ProjectorConfig.INSTANCE.maxDecodedImageSize.get());
-                        DECODE_NANOS.addAndGet(System.nanoTime() - td);
-                        stageFrame(hash, frame, sized);
-                        return;
-                    }
-                    // 2) 本地没有：向服务端要「这一帧」（单包即可，通常一帧 < 200KB）
-                    loadFrameFromServer(hash, frame);
+                    // 【27.2.4-201】内置逐帧解码（MJPEG / ZIP 帧序列）已随 Build 112 的内置解码器下线。
+                    // 这个入口现在只剩调用方 `videoFrame()`，而渲染层已经不再调它
+                    //（视频一律交给外部解码器）。真被调到就当场判失败，**绝不**再去要一帧一帧的数据。
+                    markFailed(hash);
+                    Projector.LOGGER.warn("[Projector][视频] 逐帧请求已被拒绝：内置帧序列解码自 Build 112 起"
+                            + "不再支持（哈希={}）", shortHash(hash));
                     return;
                 }
 
@@ -782,43 +759,17 @@ public final class MediaCache {
             return;
         }
         if (video) {
-            // 视频源与帧缓存：只有拿到「完整文件」时才需要整段映射；
-            // 服务端按需下发的单帧走的是内存解码路径（path 指向该帧的缓存文件）。
-            VideoSource src = VIDEO_SOURCES.get(hash);
-            if (src == null && path != null && java.nio.file.Files.isRegularFile(path)) {
+            // 【27.2.4-201】视频不再在这里解码（内置帧解码已下线）：
+            // 只把文件登记进本地索引，画面交给外部解码器按哈希去打开。
+            if (path != null && java.nio.file.Files.isRegularFile(path)) {
                 // 不要经 LocalMedia.byHash 判断：本地用户文件的索引键是 "local:<路径>"，
                 // 按 SHA-1 是查不到的，那样刚上传的视频会一直显示占位块。
-                src = VideoSource.open(path);
-                if (src != null) {
-                    VIDEO_SOURCES.put(hash, src);
-                    // 顺便登记，后续按 hash 也能直接查到这份文件
-                    LocalMedia.registerCache(hash, path);
-                }
+                LocalMedia.registerCache(hash, path);
             }
-            if (src == null) {
-                markFailed(hash);
-                // 【rc-83】整段文件到手却打不开（不是可播放的 MJPEG/ZIP 之类）：
-                // 把整段标记撤掉，让重试回到逐帧流式 —— 否则会一直卡在「加载中…」。
-                if (frame < 0) {
-                    WHOLE_FILE_REQUESTED.remove(hash);
-                    STREAM_COUNT.remove(hash);
-                    Projector.LOGGER.warn("[Projector][客户端][下载] 整段视频已下载但打不开，退回逐帧播放"
-                            + "（哈希={} 路径={}）", shortHash(hash), path);
-                }
-                return;
+            if (frame < 0) {
+                WHOLE_FILE_REQUESTED.remove(hash);
+                STREAM_COUNT.remove(hash);
             }
-            // 【rc-83】整段下载（frame < 0）先解第 0 帧顶上，播放随后全部走本地文件
-            int want = frame < 0 ? 0 : frame;
-            ImageCodec.Decoded decoded = src.decode(want);
-            if (decoded == null && frame < 0) {
-                Projector.LOGGER.warn("[Projector][客户端][下载] 整段视频第 0 帧解码失败（哈希={}）",
-                        shortHash(hash));
-                return;
-            }
-            if (decoded == null) return;
-            ImageCodec.Decoded sized = ImageCodec.downscale(decoded,
-                    ProjectorConfig.INSTANCE.maxDecodedImageSize.get());
-            stageFrame(hash, want, sized);
             return;
         }
         ImageCodec.Decoded decoded = ImageCodec.decode(data);
@@ -1096,10 +1047,10 @@ public final class MediaCache {
         long buffered = 0;
         for (Download d : DOWNLOADS.values()) buffered += d.bufferedBytes();
         return String.format(java.util.Locale.ROOT,
-                "图片=%d张/%.1fMB 视频槽=%d个/%.1fMB(预算%.0fMB,跳过%d) 下载缓冲=%.1fMB 视频源=%d个 BS=%.1fMB",
+                "图片=%d张/%.1fMB 视频槽=%d个/%.1fMB(预算%.0fMB,跳过%d) 下载缓冲=%.1fMB BS=%.1fMB",
                 imgCount, imgBytes / 1048576.0, slotCount, SLOT_BYTES.get() / 1048576.0,
                 slotBudgetBytes() / 1048576.0, SLOT_BUDGET_SKIPPED.get(),
-                buffered / 1048576.0, VIDEO_SOURCES.size(), SLOT_BYTES.get() / 1048576.0);
+                buffered / 1048576.0, SLOT_BYTES.get() / 1048576.0);
     }
 
     /** 【27.1.1】当前所有在途下载占用的**堆**字节（回归用：整段流式写盘时必须恒为 0）。 */
@@ -1329,7 +1280,11 @@ public final class MediaCache {
             if (dl.receivedSum < total) {
                 if (next < total) {
                     // 续传：不解除在途标志、也不登记新的「开始」（同 rc-83）
-                    sendChunkRequest(hash, WHOLE, next, total - next);
+                    // 【27.2.4-200 修】限速必须按**这一片实际要的字节数**算，不能按「剩余总长」：
+                    // 服务端每次只发 CHUNK_BYTES（200 KB），而 paceDelayMs(length) 会用剩余长度
+                    // 算出一个几十秒的间隔 —— 24 MB 的视频要 24 分钟，>30 MB 的视频每次都会
+                    // 超过 DOWNLOAD_STALE_MS(15 s) 被判过期、从 0 重来，永远下不完。
+                    sendChunkRequest(hash, WHOLE, next, Math.min(CHUNK_BYTES, total - next));
                 }
                 return;
             }
@@ -1355,35 +1310,12 @@ public final class MediaCache {
             java.nio.file.Files.move(part, cached, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             LocalMedia.registerCache(hash, cached);
             TransferLog.downloadDone(hash, WHOLE, size, cached);
-            // 首帧立刻顶上，播放随后全部走本地文件
-            finishVideoFromPath(hash, cached);
+            // 【27.2.4-201】不再解「第 0 帧顶着」：内置帧解码已下线，
+            // 文件登记进本地索引后由外部解码器直接打开。
         } catch (Throwable t) {
             Projector.LOGGER.warn("[Projector][客户端][下载] 流式写盘失败 {}: {}", hash, t.toString());
             TransferLog.downloadFail(hash, WHOLE, "流式写盘失败：" + t);
             dropDownload(k, true);
-            markFailed(hash);
-        }
-    }
-
-    /** 【27.1.1】整段文件已在本地：打开视频源并解出第 0 帧顶上（等价于旧 finish 的 frame&lt;0 分支）。 */
-    private static void finishVideoFromPath(String hash, Path path) {
-        try {
-            VideoSource src = VIDEO_SOURCES.get(hash);
-            if (src == null) {
-                src = VideoSource.open(path);
-                if (src == null) {
-                    markFailed(hash);
-                    return;
-                }
-                VIDEO_SOURCES.put(hash, src);
-            }
-            ImageCodec.Decoded decoded = src.decode(0);
-            if (decoded == null) return;
-            ImageCodec.Decoded sized = ImageCodec.downscale(decoded,
-                    ProjectorConfig.INSTANCE.maxDecodedImageSize.get());
-            stageFrame(hash, 0, sized);
-        } catch (Throwable t) {
-            Projector.LOGGER.warn("[Projector][客户端][下载] 整段视频解码首帧失败 {}: {}", hash, t.toString());
             markFailed(hash);
         }
     }
@@ -1454,7 +1386,8 @@ public final class MediaCache {
             // 【rc-83】续传：**不解除在途标志、也不登记新的「开始」**（限速后的下一片）。
             // 以前这里没有任何在途标志，而调用方每帧都会重新发一次 offset=0 的请求 ⇒
             // 同一份媒体的同一段被服务端反复下发，重组缓冲永远填不到尾。
-            sendChunkRequest(hash, frame, next, dl.total - next);
+            // 同上：按实际请求的字节数限速
+            sendChunkRequest(hash, frame, next, Math.min(CHUNK_BYTES, dl.total - next));
             return;
         }
 
@@ -1471,7 +1404,12 @@ public final class MediaCache {
             } catch (Exception ex) {
                 Projector.LOGGER.warn("[Projector] 缓存媒体失败 {}: {}", hash, ex.toString());
             }
-            LocalMedia.registerCache(hash, cached);
+            // 【27.2.4-200 修】**单帧**（frame >= 0，文件名是 <hash>_fN.bin）绝不许按媒体哈希登记：
+            // 那样 byHash()/hasWhole() 会认为「整段已经在本机」，整段下载被永久挡住、
+            // 服务端托管的视频永远卡在第 0 帧（LocalMedia.rescan 里正是为了这条才跳过帧文件）。
+            if (!video || frame < 0) {
+                LocalMedia.registerCache(hash, cached);
+            }
             // 【②】下载完成：含落盘路径、分片数、字节数、用时、速率
             TransferLog.downloadDone(hash, frame, full.length, cached);
             // 【rc-76 哈希校验】只有「整段文件」（frame < 0）才可能与哈希对得上；
@@ -1603,8 +1541,6 @@ public final class MediaCache {
             frames.byFrame.clear();
         }
         LAST_WANTED.remove(hash);
-        VideoSource src = VIDEO_SOURCES.remove(hash);
-        if (src != null) src.close();
         LOADS.remove(hash);
         // 【rc-83】这份媒体所有在途下载（含整段）一起作废
         for (String k : new java.util.ArrayList<>(DOWNLOADS.keySet())) {
@@ -1632,8 +1568,6 @@ public final class MediaCache {
         }
         IMAGES.clear();
         VIDEO_FRAMES.clear();
-        for (VideoSource s : VIDEO_SOURCES.values()) s.close();
-        VIDEO_SOURCES.clear();
         SLOT_BYTES.set(0);          // 【27.1.1】槽位表已清空，字节账目一起归零
         LOADS.clear();
         for (Download d : DOWNLOADS.values()) d.closeQuietly(true);
@@ -1651,7 +1585,7 @@ public final class MediaCache {
     }
 
     /**
-     * 【27.1.3】当前**内存里正在用**的媒体哈希（图片 + 视频帧 + 视频源）。
+     * 【27.1.3】当前**内存里正在用**的媒体哈希（图片 + 视频帧 + 正在播的视频文件）。
      *
      * <p>{@link CacheCleaner} 清磁盘缓存时用它做白名单：正在播/正在画的东西，
      * 磁盘上那份不能删（删了就会在播放中途读不到数据）。</p>
@@ -1659,7 +1593,9 @@ public final class MediaCache {
     public static Set<String> inUseHashes() {
         Set<String> set = new HashSet<>(IMAGES.keySet());
         set.addAll(VIDEO_FRAMES.keySet());
-        set.addAll(VIDEO_SOURCES.keySet());
+        // 【27.2.4-201】视频源表已随内置解码器下线：正在播的视频文件由
+        // WaterMediaVideos 那一侧持有（它自己按哈希打开文件），这里不再另记一份。
+        set.addAll(top.hmjmfabc.projector.client.media.wm.WaterMediaVideos.inUseHashes());
         return set;
     }
 

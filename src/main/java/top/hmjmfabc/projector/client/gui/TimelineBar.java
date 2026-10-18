@@ -8,6 +8,7 @@ import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.common.Plane;
 import top.hmjmfabc.projector.common.sequence.SequenceClip;
+import top.hmjmfabc.projector.common.sequence.SequenceTrack;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +19,8 @@ import java.util.UUID;
  *
  * <p>对应剪映 PC 版那种「长条 + 可拉两端」的编辑体验：</p>
  * <ul>
- *   <li><b>框子最多显示 30 秒</b>，下方有滑块可以在 <b>0~999 秒</b>范围内左右拖到别处；</li>
+ *   <li><b>框子最多显示 30 秒</b>，下方有滑块可以在 <b>0~动态上限</b>范围内左右拖到别处
+ *       （动态上限 = 流程末尾 + 余量，见 {@code SequenceTrack.dynamicMaxSec()}）；</li>
  *   <li>每个片段画成一根长条，<b>两端可以拉动</b>增减显示时间，中间拖动就是整条平移；</li>
  *   <li>拖动时带<b>卡位</b>：靠近别的片段的入场/出场时刻（或整秒）时会正好吸过去；</li>
  *   <li>点一下长条选中它，点空白处拖动就是移播放头。</li>
@@ -32,7 +34,18 @@ public class TimelineBar extends AbstractWidget {
     /** 框子里最多显示多少秒（用户要求 30 秒）。 */
     public static final double VISIBLE_SEC = 30.0;
     /** 时间轴总长度（秒）。 */
-    public static final double MAX_SEC = SequenceClip.MAX_SECONDS;
+    /**
+     * 可拖动范围上限（秒）——**动态**。
+     *
+     * <p>27.2.2 之前是固定的 {@code 999} 秒；现在按当前流程动态算：
+     * 见 {@code SequenceTrack.dynamicMaxSec()}（末尾 + 余量，永远比内容长一截）。</p>
+     */
+    private double limit() {
+        if (plane != null && plane.sequence != null) {
+            return Math.max(SequenceTrack.MIN_SPAN_SEC, plane.sequence.dynamicMaxSec());
+        }
+        return SequenceTrack.MIN_SPAN_SEC;
+    }
 
     /** 刻度尺高度。 */
     private static final int RULER_H = 11;
@@ -146,7 +159,7 @@ public class TimelineBar extends AbstractWidget {
     }
 
     private double maxWindowStart() {
-        return Math.max(0, MAX_SEC - VISIBLE_SEC);
+        return Math.max(0, limit() - VISIBLE_SEC);
     }
 
     /**
@@ -154,7 +167,7 @@ public class TimelineBar extends AbstractWidget {
      *
      * <p><b>为什么必须唯一：</b>拖动长条时，鼠标位置换算成「秒」要用 {@code windowStart}
      * 当参考系。视窗一旦滚动而抓取偏移没跟着补偿，下一次拖动就会把这次滚动当成
-     * 鼠标移动 —— 长条瞬间被甩到 0 或 999（玩家实测的「稍有不慎就偏移到极远处」）。
+     * 鼠标移动 —— 长条瞬间被甩到 0 或最右端（玩家实测的「稍有不慎就偏移到极远处」）。
      * 所以这里统一补偿：<b>视窗滚多少，抓取点就挪多少</b>，长条永远粘在光标下。</p>
      */
     private void setWindowStart(double v) {
@@ -212,7 +225,7 @@ public class TimelineBar extends AbstractWidget {
     }
 
     public void setPlayhead(double sec) {
-        this.playheadSec = Math.max(0, Math.min(MAX_SEC, sec));
+        this.playheadSec = Math.max(0, Math.min(limit(), sec));
     }
 
     /**
@@ -292,7 +305,7 @@ public class TimelineBar extends AbstractWidget {
         // 每秒一条短刻度、每 5 秒一条长刻度 + 文字
         int firstSec = (int) Math.floor(windowStart);
         int lastSec = (int) Math.ceil(windowStart + VISIBLE_SEC);
-        for (int s = Math.max(0, firstSec); s <= Math.min((int) MAX_SEC, lastSec); s++) {
+        for (int s = Math.max(0, firstSec); s <= Math.min((int) limit(), lastSec); s++) {
             int sx = secToX(s);
             if (sx < trackLeft() || sx > trackRight()) continue;
             boolean major = s % 5 == 0;
@@ -372,7 +385,7 @@ public class TimelineBar extends AbstractWidget {
 
         int sy = cs + (STRIP_H - SCROLL_H) / 2;
         gfx.fill(barLeft(), sy, barRight(), sy + SCROLL_H - 2, 0xFF20242C);
-        double frac = VISIBLE_SEC / MAX_SEC;
+        double frac = VISIBLE_SEC / Math.max(VISIBLE_SEC, limit());
         int barW = Math.max(20, (int) Math.round((barRight() - barLeft()) * frac));
         double t = maxWindowStart() <= 0 ? 0 : windowStart / maxWindowStart();
         int barX = barLeft() + (int) Math.round(((barRight() - barLeft()) - barW) * t);
@@ -483,7 +496,7 @@ public class TimelineBar extends AbstractWidget {
     }
 
     private void seekTo(double mouseX) {
-        double sec = Math.max(0, Math.min(MAX_SEC, xToSec(mouseX)));
+        double sec = Math.max(0, Math.min(limit(), xToSec(mouseX)));
         playheadSec = sec;
         if (listener != null) listener.onSeek(sec);
     }
@@ -553,7 +566,7 @@ public class TimelineBar extends AbstractWidget {
                     // 手抖 1 像素、几十帧之后就冲到 962 秒（玩家报的「偏移到极远处」的元凶）。
                     // 现在偏移取「按下时的鼠标秒数 − 按下时的起点」，公式幂等，拖多少帧都不会累积。
                     double grabOffset = dragGrabSec - dragStartAtPress;
-                    double ns = Math.max(0, Math.min(MAX_SEC - dur, sec - grabOffset));
+                    double ns = Math.max(0, Math.min(limit() - dur, sec - grabOffset));
                     ns = snapMove(ns, dur, dragClip);
                     dragClip.startSec = ns;
                     dragClip.endSec = ns + dur;
@@ -561,7 +574,7 @@ public class TimelineBar extends AbstractWidget {
                     double ns = Math.max(0, Math.min(dragClip.endSec, snap(sec, dragClip)));
                     dragClip.startSec = ns;
                 } else {
-                    double ne = Math.min(MAX_SEC, Math.max(dragClip.startSec, snap(sec, dragClip)));
+                    double ne = Math.min(limit(), Math.max(dragClip.startSec, snap(sec, dragClip)));
                     dragClip.endSec = ne;
                 }
                 dragClip.sanitize();
@@ -634,7 +647,7 @@ public class TimelineBar extends AbstractWidget {
         if (Math.abs(start - rounded) < bestDist) {
             bestStart = rounded;
         }
-        return Math.max(0, Math.min(MAX_SEC - dur, bestStart));
+        return Math.max(0, Math.min(limit() - dur, bestStart));
     }
 
     private double[] snapCandidates(@Nullable SequenceClip exclude) {

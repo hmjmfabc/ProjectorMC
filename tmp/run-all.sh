@@ -52,5 +52,10 @@ run v30 T30
 run v34 T34
 run v35 T35
 run v36 T36
+run v38 T38
+run v39 T39
+run v40 T40
+run v41 T41
+run v42 T42
 
 echo "--- 失败套件数: $fail ---"

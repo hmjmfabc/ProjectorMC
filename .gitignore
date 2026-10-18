@@ -85,3 +85,6 @@ TODO_NEXT.md
 
 # 第三方安卓兼容层源码/二进制（GPL-3.0：本模组只按 modid 检测，不引用其代码，不入库）
 /WATERMeDIA-Android-Bridge-main/
+
+# 与本模组无关的第三方插件源码（只作参考，不入库）
+/NetMusic-Plugins/

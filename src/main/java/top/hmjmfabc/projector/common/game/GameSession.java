@@ -385,8 +385,12 @@ public final class GameSession {
         g.kind = GameKind.clamp(t.getInt("kind"));
         g.mode = GameMode.clamp(t.getInt("mode"));
         g.board = t.getIntArray("board");
-        g.turn = t.contains("turn") ? t.getInt("turn") : SIDE_A;
-        g.result = t.getInt("result");
+        // 【27.2.4-200 修】load() 是**网络侧**入口（updateWidget 的客户端数据也走这里），
+        // 以前 turn/result 直接取客户端给的值 ⇒ 改过的客户端可以直接提交「我赢了」。
+        int loadedTurn = t.contains("turn") ? t.getInt("turn") : SIDE_A;
+        g.turn = loadedTurn == SIDE_B ? SIDE_B : SIDE_A;
+        int loadedResult = t.getInt("result");
+        g.result = (loadedResult == 1 || loadedResult == -1 || loadedResult == 2) ? loadedResult : 0;
         g.moveCount = t.getInt("moves");
         g.quietMoves = t.getInt("quiet");
         g.lastFrom = t.getInt("lastFrom");

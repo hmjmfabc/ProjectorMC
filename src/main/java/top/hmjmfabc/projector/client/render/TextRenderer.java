@@ -125,9 +125,13 @@ public final class TextRenderer {
                                  int align, int vAlign,
                                  double boxX, double boxY, double boxW, double boxH,
                                  double rotDeg, float alpha, double depth) {
-        // 默认旋转轴 = 方框左下角（与 SelectionRenderer 画控件框用的是同一个点）
+        // 【27.2.4-200 修】默认旋转轴改成**方框中心**。
+        // 以前是「方框左下角」，而方框/图标/选中框都已统一绕控件中心旋转 ⇒
+        // 控件一设旋转角，文字就绕自己的角飞出去，和它的框分家。
+        // 更准确的调用点会显式传控件中心（{@code w.rotX(), w.rotY()}），这里只是兜底。
         drawInBox(collector, ctx, font, text, fontSize, wrapWidth, lineSpacing, align, vAlign,
-                boxX, boxY, boxW, boxH, rotDeg, alpha, depth, boxX, boxY);
+                boxX, boxY, boxW, boxH, rotDeg, alpha, depth,
+                boxX + boxW * 0.5, boxY + boxH * 0.5);
     }
 
     /**

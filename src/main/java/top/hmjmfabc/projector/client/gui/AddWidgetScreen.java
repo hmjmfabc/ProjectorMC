@@ -47,7 +47,7 @@ public class AddWidgetScreen extends ProjectorScreen {
         final boolean webOk = webAvailable();
         this.videoMissing = !videoOk;
         this.webMissing = !webOk;
-        int rows = 5 + (specialExpanded ? 3 : 1);
+        int rows = 5 + (specialExpanded ? 4 : 1);   // 【27.2.2】展开后多一行：展示框
         int hints = (incomplete ? 1 : 0) + (videoMissing ? 1 : 0) + (webMissing ? 1 : 0);
         panelH = 22 + rows * 24 + 6 + 26 + hints * 14 + 4;
         panelX = (this.width - w) / 2;
@@ -78,17 +78,31 @@ public class AddWidgetScreen extends ProjectorScreen {
         y += 24;
 
         if (specialExpanded) {
-            int third = (w - 48) / 3;
-            button("\u65f6\u949f", x + 24, y, third, 20, b -> add(Widget.KIND_CLOCK)).active = !incomplete;
-            button("\u5929\u6c14", x + 28 + third, y, third, 20, b -> add(Widget.KIND_WEATHER)).active = !incomplete;
-            button("\u767e\u5206\u6bd4", x + 32 + third * 2, y, third, 20, b -> add(Widget.KIND_PROGRESS)).active = !incomplete;
+            // 【27.2.2-152】三列网格：左右各留 24、列间 4 ⇒ 整排**视觉居中**。
+            // 旧写法 third=(w-48)/3 配合 24/28/32 的起点，左margin=24、右margin=18，
+            // 整排向左歪 3 像素；而且第二行只放两个按钮、第三个按钮被放到**第 3 列**，
+            // 中间空出一格 —— 玩家原话「7 个特殊控件按钮都对不齐，看着特别难受」。
+            // 规矩：按钮按列 1→2→3 顺序填，**任何一行都不许跳过中间列**。
+            final int gap = 4;
+            final int margin = 24;
+            final int third = (w - margin * 2 - gap * 2) / 3;
+            final int c1 = x + margin;
+            final int c2 = x + margin + third + gap;
+            final int c3 = x + margin + (third + gap) * 2;
+            button("\u65f6\u949f", c1, y, third, 20, b -> add(Widget.KIND_CLOCK)).active = !incomplete;
+            button("\u5929\u6c14", c2, y, third, 20, b -> add(Widget.KIND_WEATHER)).active = !incomplete;
+            button("\u767e\u5206\u6bd4", c3, y, third, 20, b -> add(Widget.KIND_PROGRESS)).active = !incomplete;
             y += 24;
             // 【③b / ⑧】新增两个特殊控件
-            button("\u6392\u884c\u699c", x + 24, y, third, 20, b -> add(Widget.KIND_LEADERBOARD)).active = !incomplete;
-            button("\u8ba1\u65f6\u5668", x + 28 + third, y, third, 20, b -> add(Widget.KIND_TIMER)).active = !incomplete;
+            button("\u6392\u884c\u699c", c1, y, third, 20, b -> add(Widget.KIND_LEADERBOARD)).active = !incomplete;
+            button("\u8ba1\u65f6\u5668", c2, y, third, 20, b -> add(Widget.KIND_TIMER)).active = !incomplete;
             y += 24;
             // 【⑪】棋类游戏（六种棋合并成一个入口）
-            button("\u68cb\u7c7b\u6e38\u620f", x + 24, y, third, 20, b -> add(Widget.KIND_CHESS)).active = !incomplete;
+            button("\u68cb\u7c7b\u6e38\u620f", c1, y, third, 20, b -> add(Widget.KIND_CHESS)).active = !incomplete;
+            // 【27.2.2】展示框（物品的二向化投影）：与棋类同一行的**第 2 列**（不是第 3 列！
+            // 放第 3 列会中间空一格）。右键放入 / 左键取出。
+            button("\u5c55\u793a\u6846", c2, y, third, 20,
+                    b -> add(Widget.KIND_ITEM)).active = !incomplete;
             y += 24;
         } else {
             button("\u65b0\u589e\u7279\u6b8a\u63a7\u4ef6 \u25b8", x + 12, y, w - 24, 20, b -> {
@@ -191,9 +205,12 @@ public class AddWidgetScreen extends ProjectorScreen {
         }
         if (kind == Widget.KIND_IMAGE || kind == Widget.KIND_VIDEO) {
             Minecraft.getInstance().setScreen(new MediaPickerScreen(parent, plane, kind == Widget.KIND_VIDEO, w));
-        } else {
-            Minecraft.getInstance().setScreen(new WidgetEditorScreen(plane, w, parent));
+            return;
         }
+        // 【27.2.2-154 用户口径】展示框**不要**一建出来就弹「从几百个物品里挑一个」——
+        // 那是逼着玩家先做一道选择题。现在直接进编辑器，选物品是编辑器里的
+        // **一个按钮**（「选择物品：…」），想换的时候再点。
+        Minecraft.getInstance().setScreen(new WidgetEditorScreen(plane, w, parent));
     }
 
     @Override

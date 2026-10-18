@@ -34,6 +34,7 @@ public final class T23 {
     private static final String H_WHOLE = "1111111111111111111111111111111111111111";   // cache/<hash>.bin
     private static final String H_LEGACY = "2222222222222222222222222222222222222222";  // cache/<hash>_f0.bin
     private static final String H_MISSING = "3333333333333333333333333333333333333333"; // 本地没有
+    private static final String H_NO_FRAMES = "4444444444444444444444444444444444444444"; // 只用来验「逐帧请求已废」
     /** 清单里声明的「整段」大小；缓存文件必须与它一致才算一整份（24 MB 太大，测试用 4 KB 等价）。 */
     private static final long VIDEO_SIZE = 4096L;
 
@@ -115,15 +116,17 @@ public final class T23 {
         check("工作线程的升级判断：本地已有整段（新命名 / 旧命名）时都不改走整段下载",
                 SENT.isEmpty(), "实发=" + SENT.size() + " 个请求 ⇒ 又变成「明明有还去要一遍」");
 
+        // 【27.2.4-201】逐帧下载已随内置帧序列后端一起下线（mjpg/zip 不再支持）：
+        // 用一份**全新的哈希**验证「问第 N 帧」这条路再也发不出请求
+        //（不能拿 H_MISSING 试：那会把它的下载状态机搅乱，后面的用例就测不到了）。
         SENT.clear();
-        MediaCache.videoFrame(H_MISSING, 0);
-        // 轮询而不是固定等待：媒体池是异步的，手机上 200ms 可能还没轮到（曾因此假失败）
-        long deadline = System.currentTimeMillis() + 3000L;
-        while (SENT.isEmpty() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(25L);
+        for (int i = 0; i < 20; i++) {
+            MediaCache.videoFrame(H_NO_FRAMES, i);
         }
-        check("本地没有的媒体：照常请求（不能把功能修没了）",
-                !SENT.isEmpty(), "一个请求都没发 ⇒ 该下载的没下载");
+        Thread.sleep(400L);
+        long frameReqs = SENT.stream().filter(r -> r.frame() >= 0).count();
+        check("问「第 N 帧」不再发出逐帧请求（内置帧序列解码已下线）",
+                frameReqs == 0, "实发逐帧请求=" + frameReqs);
 
         // ---- ⑤c 本地真的没有时：流式计数过阈值后，**工作线程会自动**把「整段下载」发出去 ----
         //（rc-88 起这个判断从渲染线程搬到了工作线程：渲染线程只打候选标记，

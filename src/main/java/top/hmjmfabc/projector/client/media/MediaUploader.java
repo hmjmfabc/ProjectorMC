@@ -138,16 +138,18 @@ public final class MediaUploader {
     /**
      * 视频元数据探测的**唯一入口**（界面与上传都走这里）。
      *
-     * <p>内置解得了（MJPEG / ZIP 帧序列）就按老办法拿尺寸+帧表；
-     * 内置解不了但在外部解码器的射程内，就只读容器头拿宽高、不建帧表
-     * （帧由外部解码器自己管）。两条都失败才返回 {@code null}。</p>
+     * <p>【27.2.4-201】只认外部解码器（WaterMedia）能放的容器：只读它的容器头拿宽高，
+     * 不建帧表（帧由解码器自己管）。<b>MJPEG / ZIP 帧序列一律返回 {@code null}</b>
+     * —— 内置逐帧解码器已在 Build 112 随 JCodec 一起下线，这条路上再没有「能放」的实现，
+     * 放行只会得到一个永远不解码的控件（玩家看到的是「选得中、放不出来」）。</p>
      */
     public record VideoMeta(int width, int height, int frames, long[] frameTable) {
+        /** 【27.2.4-201】帧表已随内置解码器一起下线，恒为 {@code false}。 */
         public boolean hasFrameTable() {
-            return frames > 0 && frameTable.length > 0;
+            return false;
         }
 
-        /** 帧率只对内置帧序列有意义；其它一律按 10 报（界面只拿它做进度换算）。 */
+        /** 帧率只对帧序列有意义；外部解码器的视频一律按 10 报（界面只拿它做进度换算）。 */
         public double fpsOrDefault() {
             return 10.0;
         }
@@ -155,17 +157,16 @@ public final class MediaUploader {
 
     @Nullable
     public static VideoMeta probeVideo(java.nio.file.Path path) {
-        if (externalVideo(path)) {
-            int[] sz = VideoProbe.size(path);
-            return new VideoMeta(sz == null ? 0 : sz[0], sz == null ? 0 : sz[1], 0, new long[0]);
-        }
-        VideoSource src = VideoSource.open(path);
-        if (src == null) {
+        if (!externalVideo(path)) {
+            // MJPEG / ZIP 帧序列、以及任何外部解码器不认的容器：**就是打不开**
+            if (path != null && path.getFileName() != null) {
+                Projector.LOGGER.info("[Projector][视频] 不支持的视频格式，已拒绝：{}（MJPEG / ZIP 帧序列"
+                        + "自 Build 112 起不再支持，请转成 MP4 / WebM / MKV）", path.getFileName());
+            }
             return null;
         }
-        VideoMeta meta = new VideoMeta(src.width, src.height, src.frameCount, src.exportFrameTable());
-        src.close();
-        return meta;
+        int[] sz = VideoProbe.size(path);
+        return new VideoMeta(sz == null ? 0 : sz[0], sz == null ? 0 : sz[1], 0, new long[0]);
     }
 
     private static void uploadBlocking(Path path, boolean video, boolean originalQuality,
@@ -198,10 +199,7 @@ public final class MediaUploader {
             }
             width = meta.width();
             height = meta.height();
-            if (meta.hasFrameTable()) {
-                frames = meta.frames();
-                frameTable = meta.frameTable();
-            }
+            // 【27.2.4-201】帧表恒为空（见 VideoMeta.hasFrameTable）：视频原样交给外部解码器
         } else {
             int[] sz = ImageCodec.size(data, 0, data.length);
             if (sz == null) {
@@ -274,20 +272,20 @@ public final class MediaUploader {
                 return;
             }
             try {
-                // 【rc-77】窗口式发送：最多领先「窗口」个未确认分片，靠服务端的 MediaAck 推进。
+                // 【rc-77】窗口式发送：最多领先「窗口字节」的未确认数据，靠服务端的 MediaAck 推进。
                 // 这样 socket 里永远只有一小段数据在排队，保活包不会被几十 MB 堵住
                 //（rc-76 只把发送挪出主线程，队头阻塞仍在 ⇒ 服务端照样判 Timed out）。
+                // 【27.2.4-201】窗口单位是**字节**（见 UploadWindow 的说明）；以前传字节对分片数，
+                // 实际只有一个分片在途 ⇒ 上传慢到几百 KB/s。同时删掉固定限速：
+                // 有了「在途字节上限」这一层，限速只会把速度再次钉死在 4 MB/s。
                 Ack ack = new Ack();
                 ACTIVE_ACKS.put(session, ack);
                 int offset = 0;
                 boolean first = true;
-                long paceSince = System.nanoTime();
-                long paceBytes = 0L;
                 long lastReportMs = 0L;
-                final long paceRate = paceBytesPerSec();
                 String failure = null;
                 while (offset < payload.length && failure == null && !ack.alreadyHave) {
-                    // 1) 窗口内尽量发
+                    // 1) 窗口内尽量发（在途字节 = 已发送 − 已确认）
                     while (offset < payload.length && ack.window.canSend(offset - ack.window.acked())) {
                         if (Minecraft.getInstance().getConnection() == null) {
                             failure = "连接已断开（上传中断；服务端会丢弃未完成的分片）";
@@ -315,7 +313,6 @@ public final class MediaUploader {
                         }
                         offset += len;
                         first = false;
-                        paceBytes += len;
                         final int sent = offset;
                         long nowMs = System.currentTimeMillis();
                         if (nowMs - lastReportMs >= 150L || sent >= payload.length) {
@@ -324,7 +321,6 @@ public final class MediaUploader {
                                     "\u4e0a\u4f20\u4e2d " + sent + "/" + payload.length
                                             + "（已确认 " + ack.window.acked() + "）"));
                         }
-                        sleepForPace(paceRate, paceBytes, paceSince);
                         if (ack.alreadyHave) break;
                     }
                     if (failure != null || ack.alreadyHave) break;
@@ -382,39 +378,6 @@ public final class MediaUploader {
         }
     }
 
-    /** 【rc-76】上传节奏（字节/秒）。0 = 不限速；本地网络（单人/联机房间）自动不限速。 */
-    private static long paceBytesPerSec() {
-        try {
-            if (top.hmjmfabc.projector.client.ClientServerInfo.unlimited()) return 0L;
-            return Math.max(0L, ProjectorConfig.INSTANCE.uploadPaceBytesPerSec.get());
-        } catch (Throwable t) {
-            return 4L * 1024 * 1024;
-        }
-    }
-
-    /**
-     * 【rc-76】按目标速率让出时间片。
-     *
-     * <p>为什么必须限速：{@code PacketDistributor.sendToServer} 是**非阻塞**的，
-     * 一旦发送速度远超真实上行带宽，未发出去的分片会堆在客户端 netty 的写缓冲里
-     * （24 MB 的文件能堆十几 MB），既吃内存，也容易被对端当成洪水。</p>
-     */
-    private static void sleepForPace(long rate, long bytes, long sinceNanos) {
-        long sleepMs;
-        if (rate <= 0) {
-            sleepMs = 2L;                                     // 本地网络：只做轻微让出
-        } else {
-            long elapsedMs = (System.nanoTime() - sinceNanos) / 1_000_000L;
-            sleepMs = bytes * 1000L / rate - elapsedMs;       // 目标时刻 - 已用时间
-        }
-        if (sleepMs <= 0) return;
-        try {
-            Thread.sleep(Math.min(sleepMs, 1000L));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
     private static void report(@Nullable Callback callback, boolean success, String message) {
         if (callback == null) return;
         // 早退路径（空文件 / 超限 / 格式不识别）都发生在工作线程上，
@@ -457,12 +420,62 @@ public final class MediaUploader {
     private static final java.util.Set<String> UPLOADED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    /** 一次上传的确认状态。字段都被网络线程写、上传线程读，所以用 volatile。 */
+    /**
+     * 一次上传的确认状态。
+     *
+     * <p>字段被网络线程写、上传线程读，所以状态量一律 volatile；
+     * 等待用 {@link #lock} 上的 wait/notify（【27.2.4-201】以前是每 10 ms 轮询一次，
+     * 每次确认都白白多等最多 10 ms —— 而分片越小、确认越频繁，这笔开销占比越大）。</p>
+     */
     private static final class Ack {
         final UploadWindow window = new UploadWindow();
+        private final Object lock = new Object();
         volatile boolean done;
         volatile boolean alreadyHave;
         volatile String reason;
+
+        /** 唤醒所有等待者（网络线程调用，不阻塞）。 */
+        void signal() {
+            synchronized (lock) {
+                lock.notifyAll();
+            }
+        }
+
+        /** 等窗口推进（或服务端喊停）；返回 false 表示超时。 */
+        boolean awaitProgress(long before, long timeoutMs) {
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            synchronized (lock) {
+                while (true) {
+                    if (alreadyHave || window.acked() > before) return true;
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0L) return false;
+                    try {
+                        lock.wait(Math.min(left, 200L));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    }
+                }
+            }
+        }
+
+        /** 等「服务端已落盘并通过校验」的最终确认；返回 false 表示超时。 */
+        boolean awaitDone(long timeoutMs) {
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            synchronized (lock) {
+                while (true) {
+                    if (done || alreadyHave) return true;
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0L) return false;
+                    try {
+                        lock.wait(Math.min(left, 200L));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -479,37 +492,17 @@ public final class MediaUploader {
         if (alreadyHave) a.alreadyHave = true;
         if (done) a.done = true;
         if (reason != null && !reason.isEmpty()) a.reason = reason;
+        a.signal();
     }
 
     /** 等窗口推进（或服务端喊停）。 */
     private static boolean waitForAck(Ack a, long timeoutMs) {
-        int before = a.window.acked();
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (a.alreadyHave || a.window.acked() > before) return true;
-            try {
-                Thread.sleep(10L);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return false;
+        return a.awaitProgress(a.window.acked(), timeoutMs);
     }
 
     /** 等「服务端已落盘并通过校验」的最终确认。 */
     private static boolean waitForDone(Ack a, long timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (a.done || a.alreadyHave) return true;
-            try {
-                Thread.sleep(10L);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return false;
+        return a.awaitDone(timeoutMs);
     }
 
     /** 是否允许添加媒体。

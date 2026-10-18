@@ -53,22 +53,32 @@ public final class PlaneSide {
      * ——包围盒自带 1.25 格 padding，所以 {@code range = 0} 的实际含义是
      * 「站在平面旁边（1.25 格以内）」，而不是「永远看不到」。</p>
      *
-     * <p><b>⚠ {@code range = 0} 不是「不限」</b>：与 {@link PlaneDistance#withinRange} 的约定相反
-     * （那边 0 = 不限）。两者相反是刻意的 —— 这一项描述的是「门开多大」，
-     * 0 = 门关到底，只留贴面那一点点。</p>
+     * <p><b>【27.2.2-160 用户口径】默认彻底不透视</b>：{@code range <= 0} 直接返回 false ——
+     * 也就是**始终保留深度测试**。这样才符合物理直觉：</p>
+     * <ul>
+     *   <li><b>1 格厚的不透明墙后面看不见控件</b>（墙在不透明批次里已经写进深度缓冲，
+     *       而我们在它之后画 ⇒ 深度测试直接把它挡掉）；</li>
+     *   <li><b>透过玻璃墙看得见</b>（玻璃是半透明批次，在我们**之后**才画，
+     *       会正常混色盖上来 ⇒ 内容透过玻璃可见）。</li>
+     * </ul>
+     *
+     * <p>⚠ 旧版这里 {@code range = 0} 的含义是「站在贴面（包围盒自带 1.25 格 padding）就透墙」，
+     * 于是玩家贴着墙站到背面时会**隔着不透明墙**看到控件（用户报的「平面透视」老 Bug）。
+     * 现在 0 = 门关死；想恢复老行为把 {@code render.backfaceSeeThroughRange} 调到 &gt; 0
+     * （值 = 背面多少格以内允许透墙）。</p>
      *
      * @param backside         相机是否在背面（{@code !isFront(...)}）
      * @param distanceToBounds 相机到平面包围盒的最近距离（格，盒内为 0）
-     * @param range            配置的透墙距离（格）
+     * @param range            配置的透墙距离（格；{@code <= 0} = 永不透墙）
      * @return true = 这一帧关闭深度测试，让内容从背面也能看到
      */
     public static boolean seeThroughFromBack(boolean backside, double distanceToBounds, double range) {
         if (!backside) {
             return false;                       // 正面永远走正常渲染（深度测试照旧）
         }
-        if (Double.isNaN(distanceToBounds) || Double.isNaN(range)) {
-            return false;                       // 算不出来就按「看不见」处理，绝不因此穿墙
+        if (Double.isNaN(distanceToBounds) || Double.isNaN(range) || range <= 0.0) {
+            return false;                       // 【160】默认不透视：不透明墙必须挡得住
         }
-        return distanceToBounds <= Math.max(0.0, range);
+        return distanceToBounds <= range;
     }
 }

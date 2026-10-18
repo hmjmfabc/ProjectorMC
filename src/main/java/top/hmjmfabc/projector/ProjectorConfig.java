@@ -53,8 +53,6 @@ public final class ProjectorConfig {
     /** 【②】是否只允许管理员上传媒体（默认 false = 普通玩家也能上传，受各自配额限制）。 */
     public final ModConfigSpec.BooleanValue onlyAdminCanUpload;
 
-    /** 【②】客户端上传节奏（字节/秒）：防止发送速度远超上行带宽，把几十 MB 堆在写缓冲里。 */
-    public final ModConfigSpec.IntValue uploadPaceBytesPerSec;
     /** 【rc-83】客户端下载媒体的节奏上限（字节/秒，0 = 不限）。 */
     public final ModConfigSpec.IntValue downloadPaceBytesPerSec;
 
@@ -84,6 +82,16 @@ public final class ProjectorConfig {
     public final ModConfigSpec.ConfigValue<String> musicProxyAddress;
     /** 网易云 Cookie（可选，填了才能拿到高码率/VIP 歌曲）。 */
     public final ModConfigSpec.ConfigValue<String> musicNeteaseCookie;
+    /**
+     * 【27.2.2】网易云音质等级：{@code STANDARD / HIGHER / EXHIGH / LOSSLESS / HIRES}。
+     * <p>登录（内置的 Better Login）之后由 VIP 解析器用它取对应码率的直链；
+     * 值与原版的 {@code NeteaseMusicLevel} 同名同义。</p>
+     */
+    public final ModConfigSpec.ConfigValue<String> musicNeteaseLevel;
+
+    // ---- 娱乐：缺件嘲讽（27.2.2-hotfix-141）----
+    /** 缺件嘲讽的语言：zh=只中文 / en=只英文 / both=两种都写（默认）。 */
+    public final ModConfigSpec.ConfigValue<String> tauntLang;
 
     public final ModConfigSpec.IntValue renderDistance;
     public final ModConfigSpec.IntValue glyphCachePages;
@@ -163,8 +171,11 @@ public final class ProjectorConfig {
         maxVideoBytes = b.comment("【普通玩家】单个视频允许的最大字节数（默认 64 MB）。\n"
                         + "管理员上限见 adminMaxVideoBytes；单人存档不受此限制。")
                 .defineInRange("maxVideoBytes", 64 * 1024 * 1024, 0, 2147483647);
-        uploadChunkBytes = b.comment("上传分包大小（字节）。网络差时可调小。")
-                .defineInRange("uploadChunkBytes", 20 * 1024, 1024, 512 * 1024);
+        uploadChunkBytes = b.comment("上传分包大小（字节，默认 128 KB）。\n"
+                        + "【27.2.4-201】默认值从 20 KB 抬到 128 KB：服务端每收一片都要做一次拷贝 +\n"
+                        + "一次确认包，分片太小会让「每片的固定开销」淹没真实带宽。\n"
+                        + "网络极差（丢包/高延迟）时可以调小，最小 4 KB。")
+                .defineInRange("uploadChunkBytes", 128 * 1024, 4 * 1024, 512 * 1024);
         maxDecodedImageSize = b.comment("解码后图片的最大边长（像素）。超出会被降采样，用于限制显存。")
                 .defineInRange("maxDecodedImageSize", 1024, 64, 4096);
         videoFrameCacheFrames = b.comment("视频解码帧缓存数量（每帧约为 边长^2*4 字节显存）。")
@@ -209,11 +220,6 @@ public final class ProjectorConfig {
                         + "如果你希望「内容保护开着时，连等级 2 的 OP 也改不了」，就把它改成 4。\n"
                         + "⚠ 无论取几，平面创建者与配置文件控制台始终可以改。")
                 .defineInRange("contentProtectMinLevel", 2, 1, 4);
-        uploadPaceBytesPerSec = b.comment("【②】客户端上传的**节奏上限**（字节/秒，默认 4 MB/s）。\n"
-                        + "为什么要限：发送是非阻塞的，一旦发得比真实上行快，未发出的分片会堆在\n"
-                        + "客户端网络写缓冲里（几十 MB），既吃内存也容易被对端当成洪水。\n"
-                        + "限速后发送速度与上行大致匹配。0 = 不限速（本地网络会自动不限速）。")
-                .defineInRange("uploadPaceBytesPerSec", 4 * 1024 * 1024, 0, 2147483647);
         downloadPaceBytesPerSec = b.comment("【rc-83】客户端**下载**媒体的节奏上限（字节/秒，默认 2 MB/s）。\n"
                         + "为什么要限：媒体是几十 MB 的批量流量，而它和「挖方块、圈选平面」这些\n"
                         + "操作包走同一条连接。不限速时一批媒体就能把链路灌满，操作包与保活包被饿死，\n"
@@ -272,11 +278,18 @@ public final class ProjectorConfig {
         b.pop();
 
         b.comment("音乐控件（本地音频 / 网易云音乐）").push("music");
-        musicVolume = b.comment("音量倍率（0~1）。还会再乘上游戏「唱片机/音符盒」那一档的音量设置。")
-                .defineInRange("volume", 0.8, 0.0, 1.0);
+        musicVolume = b.comment("音量倍率（0~1）。还会再乘上游戏「唱片机/音符盒」那一档的音量设置。\n"
+                        + "默认 1.0（= 不再额外压低）。网络音乐机给音效设的是 volume=4.0，\n"
+                        + "听起来比本模组旧默认（0.8）响不少；这里取 1.0 作为「不损失响度」的上限，\n"
+                        + "再往上加会盖过唱片机/音符盒，也会让远处的声音衰减得更慢（穿透感不自然）。")
+                .defineInRange("volume", 1.0, 0.0, 1.0);
         musicHearDistance = b.comment("多远之后听不见（方块）。音乐是**世界里的声源**，\n"
-                        + "离得越远越轻，超过这个距离就完全听不到。")
-                .defineInRange("hearDistance", 32, 4, 256);
+                        + "离得越远越轻，超过这个距离就完全听不到。\n"
+                        + "默认 64：对齐「网络音乐机」的量级 —— 它的唱片机给音效设 volume=4.0\n"
+                        + "（{@code NetMusicSound} 构造里那句 this.volume = 4.0f），\n"
+                        + "MC 的默认衰减下 4.0 约等于 64 格可闻范围。以前是本模组的 32，\n"
+                        + "玩家反馈「走几步就听不见了」。")
+                .defineInRange("hearDistance", 64, 4, 512);
         musicMaxConcurrent = b.comment("本客户端同时最多播放几首音乐（默认 1）。\n"
                         + "同一时刻有多个音乐控件在放时，超出的部分不会出声（也不会去下载）。")
                 .defineInRange("maxConcurrent", 1, 1, 8);
@@ -289,6 +302,12 @@ public final class ProjectorConfig {
                         + "免费歌曲可以正常播放，VIP/高码率歌曲会失败（会给出提示）。\n"
                         + "填法：浏览器登录 music.163.com 后复制整条 Cookie（含 MUSIC_U=...）。")
                 .define("neteaseCookie", "");
+
+        // 【27.2.2】音质等级（登录后由 VIP 解析器使用）
+        musicNeteaseLevel = b.comment("网易云音质等级，登录（内置 Better Login）后由 VIP 解析器用它取直链：\n"
+                        + "  STANDARD = 标准 / HIGHER = 较高 / EXHIGH = 极高 / LOSSLESS = 无损 / HIRES = 高清臻音\n"
+                        + "默认高阶（= 原版默认）。VIP 歌曲要 Cookie 有效才拿得到对应码率。")
+                .define("neteaseLevel", "HIGHER");
         b.pop();
 
         // 【27.1.3】在线视频（视频控件支持 B 站链接与任意直链）
@@ -376,15 +395,15 @@ public final class ProjectorConfig {
                         + "太小会与墙面 Z-fighting（远处与光影下尤其明显，表现为内容闪烁）；\n"
                         + "太大会在斜着看时发现内容「浮」在墙上。默认 0.02 格（2 厘米）。")
                 .defineInRange("surfaceBias", 0.02, 0.002, 0.1);
-        // 【hotfix-II】反面（站在平面背面）能不能看到内容。
-        // 平面是单面的，站到背面时方块本体挡在相机与内容之间 ⇒ 默认什么都看不到；
-        // 这个键放开「贴着平面时关掉深度测试」的距离，几何位置一个像素都不动。
-        renderBackfaceSeeThrough = b.comment("【反面】从背面「透墙」看到内容的最大距离（格，默认 0）。\n"
-                        + "平面正面在哪、背面也画在哪（不做任何位移）；站在背面时方块本体本来会挡住内容，\n"
-                        + "所以相机与平面包围盒的距离不超过这个值时，这一帧就关掉深度测试把内容画出来。\n"
-                        + "⚠ 这里的 0 **不是**「不限」：0 = 必须贴到平面（包围盒自带 1.25 格余量，\n"
-                        + "   约等于「站在平面旁边」）。调大 = 从更远处也能透墙看到内容，也更容易穿墙。\n"
-                        + "超出这个距离按正常遮挡处理：隔着方块看不到，但墙上开洞或方块被挖掉时能看见。")
+        // 【27.2.2-160 用户口径】默认**彻底不透视**：
+        //   ①1 格厚的不透明墙后面看不见控件（不透明批次已经写进深度缓冲，我们在它之后画 ⇒ 被挡住）；
+        //   ②透过玻璃墙看得见（玻璃是半透明批次，在我们之后才画，正常混色盖上来）。
+        // 这一项只在玩家**主动**想要「贴着墙也能透视」时才调大（老行为的开关）。
+        renderBackfaceSeeThrough = b.comment("【反面/透视】从背面「透墙」看到内容的最大距离（格，默认 0 = 不透视）。\n"
+                        + "默认 0：始终保留深度测试 —— 1 格厚的不透明墙后面看不见控件，\n"
+                        + "但透过玻璃（半透明方块）看得见，墙上开洞或被挖掉时也看得见。\n"
+                        + "调大 = 相机与平面包围盒的距离不超过这个值时，这一帧关掉深度测试把内容画出来，\n"
+                        + "也就是「隔着不透明墙也能看到」（老版本的行为，容易穿墙，一般不用开）。")
                 .defineInRange("backfaceSeeThroughRange", 0.0, 0.0, 64.0);
         // 【hotfix-99】真实光照：光影包会把「天空光 15 + 方块光 14」也当作很亮，
         // 内容于是看着像在发光。打开这一项后，控件用**平面所在位置的真实光照**渲染。
@@ -397,6 +416,21 @@ public final class ProjectorConfig {
                         + "打开后控件随环境明暗变化（与旁边的墙一致），不会再被光影当成发光体；\n"
                         + "代价是**黑暗处的内容也会变暗**。想让它永远清晰可读就保持关闭（默认）。")
                 .define("realLightForWidgets", false);
+        b.pop();
+
+        // 【27.2.2-hotfix-141 · 娱乐更新】缺件嘲讽的语言
+        b.comment("缺件嘲讽（娱乐向）").push("taunt");
+        tauntLang = b.comment("缺件时那段「嘲讽」用哪种语言写进日志与崩溃报告：\n"
+                        + "  zh   = 只写中文\n"
+                        + "  en   = 只写英文\n"
+                        + "  both = 两种都写（默认）\n"
+                        + "触发条件是「安卓 + 装了 MCEF/WaterMedia + 没装它对应的安卓兼容层」——\n"
+                        + "那两种情况会直接把游戏带走，起步阶段崩的话连 Crash Report 都没有，\n"
+                        + "所以这段话会写进 logs/latest.log 与 logs/debug.log。\n"
+                        + "⚠ 配置在启动**后期**才加载，而这段话要在启动**最前面**就打出来，\n"
+                        + "   所以本次启动实际用的是上一次保存的值；实在要立刻生效可以用\n"
+                        + "   -Dprojector.taunt.lang=zh|en|both 启动参数。")
+                .define("lang", "both");
         b.pop();
     }
 }

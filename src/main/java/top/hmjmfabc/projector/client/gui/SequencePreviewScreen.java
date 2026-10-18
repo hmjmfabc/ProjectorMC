@@ -10,6 +10,7 @@ import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.client.ClientPermissions;
 import top.hmjmfabc.projector.common.Plane;
 import top.hmjmfabc.projector.common.sequence.SequenceClip;
+import top.hmjmfabc.projector.common.sequence.SequenceTrack;
 import top.hmjmfabc.projector.network.Payloads;
 
 import java.util.Locale;
@@ -113,11 +114,13 @@ public class SequencePreviewScreen extends ProjectorScreen {
         String text = String.format(Locale.ROOT, "%s  %.1fs", playing ? "\u25b6" : "\u23f8", t);
         label(gfx, text, 10 + 78 * 3 + 16, barTop + 8, 0xFFFFFFFF);
 
-        // 细进度条：播放头在 0~999 秒里的位置
+        // 细进度条：播放头在 0~动态上限里的位置（27.2.2 起不再是固定 999 秒）
         int barX = 10 + 78 * 3 + 16 + font.width(text) + 12;
         int barW = Math.max(40, this.width - barX - 96);
         gfx.fill(barX, barTop + 13, barX + barW, barTop + 17, 0xFF20242C);
-        double frac = Math.max(0, Math.min(1, t / SequenceClip.MAX_SECONDS));
+        double denom = plane.sequence != null
+                ? Math.max(1.0, plane.sequence.dynamicMaxSec()) : SequenceTrack.MIN_SPAN_SEC;
+        double frac = Math.max(0, Math.min(1, t / denom));
         gfx.fill(barX, barTop + 13, barX + (int) Math.round(barW * frac), barTop + 17, 0xFF7FD4FF);
         int headX = barX + (int) Math.round(barW * frac);
         gfx.fill(headX - 1, barTop + 10, headX + 1, barTop + 20, 0xFFFF5555);

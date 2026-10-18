@@ -20,11 +20,15 @@ import java.util.UUID;
  *   <li>{@code playing == true} → 按 {@code offsetSec + (游戏刻差 ÷ 20)} 求当前时间，
  *       逐个控件算出动画状态；</li>
  *   <li>某个控件<b>不在任何片段里</b> → 一直显示（不受流程影响）；</li>
- *   <li><b>流程里"最后"的那个片段（endSec 最大）不出场</b>：它的控件在流程走完之后
- *       仍然留在平面上——这正是用户举的例子「第 1 秒显示 1，第 2~10 秒显示 2，
- *       10 秒后流程结束，2 会留在平面上」。因此播放不会在末尾自动停止，
- *       时间会继续走，最后一个控件就一直停在那里；</li>
- *   <li>时间轴长度固定 0~999 秒。</li>
+ *   <li><b>流程里"最后"的那个片段（endSec 最大）不出场</b>：它的控件不会在流程末尾被「收走」
+ *       （出场动画跳过），所以最后一眼看到的是它的完整样子；</li>
+ *   <li><b>最后一个片段播完就停</b>（用户 27.2.2）：时间走到 {@link #maxEndSec()} 时，
+ *       单次模式立刻 {@code stop()}（{@code playing = false} ⇒ 回到常规渲染，
+ *       所有控件都显示）；{@link #loop} 为真则从 0 秒重新开始，一直循环。
+ *       判定由**服务端**每刻做一次（{@code ServerNetHandler.tickSequences}），
+ *       所以所有玩家看到的「停/重播」时刻完全一致，不需要额外同步包；</li>
+ *   <li>时间轴的可编辑长度是**动态**的：{@link #dynamicMaxSec()} = 末尾 + 余量，
+ *       内容越长可拖范围越大（硬上限见 {@link SequenceClip#MAX_SECONDS}，约 11.5 天）。</li>
  * </ul>
  *
  * <h2>为什么时间用「游戏刻」当锚点</h2>
@@ -41,6 +45,8 @@ public final class SequenceTrack {
 
     /** 是否正在播放（true 才会套用时间轴）。 */
     public boolean playing;
+    /** 播完最后一个片段后是否从头再来（用户 27.2.2 要求）。 */
+    public boolean loop;
     /** 播放起点（游戏刻）。 */
     public long startTick;
     /** 起点的秒偏移（暂停/继续时用它把时间接上去）。 */
@@ -64,6 +70,59 @@ public final class SequenceTrack {
         double elapsed = (gameTime - startTick) / 20.0;
         if (elapsed < 0) elapsed = 0;
         return offsetSec + elapsed;
+    }
+
+    /** 可编辑长度至少给这么多秒（内容很短时也给一块能拖的地方）。 */
+    public static final double MIN_SPAN_SEC = 30.0;
+    /** 动态上限在末尾之后固定留的余量（秒）。 */
+    public static final double SPAN_PAD_SEC = 10.0;
+    /** 动态上限在末尾之后按比例留的余量（长时间轴按比例留更好用）。 */
+    public static final double SPAN_PAD_RATIO = 0.25;
+
+    /**
+     * 【27.2.2】**动态上限**：这条流程现在最多能编到第几秒。
+     *
+     * <p>算法：{@code max(MIN_SPAN_SEC, 末尾 + max(SPAN_PAD_SEC, 末尾 × SPAN_PAD_RATIO))}，
+     * 再被 {@link SequenceClip#MAX_SECONDS} 兜住。于是</p>
+     * <ul>
+     *   <li>空流程也能拖到 30 秒（够先摆几段）；</li>
+     *   <li>末尾 100 秒 ⇒ 上限 125 秒（留 25 秒余量接着排）；</li>
+     *   <li>末尾 1 小时 ⇒ 上限 1.25 小时。**永远比内容长一截**，不会「排到 999 秒就动不了」。</li>
+     * </ul>
+     */
+    public double dynamicMaxSec() {
+        double end = maxEndSec();
+        double span = Math.max(MIN_SPAN_SEC,
+                end + Math.max(SPAN_PAD_SEC, end * SPAN_PAD_RATIO));
+        return Math.min(SequenceClip.MAX_SECONDS, span);
+    }
+
+    /** 流程是否已经走到末尾（只有正在播放、且确实有片段时才算）。 */
+    public boolean finished(long gameTime) {
+        double end = maxEndSec();
+        return playing && end > 0 && timeSec(gameTime) >= end;
+    }
+
+    /**
+     * 【27.2.2】**服务端每刻调一次**：走到末尾就「停」或「循环重播」。
+     *
+     * @return 状态是否变了（变了才需要 markDirty + 广播）
+     */
+    public boolean advance(long gameTime) {
+        if (!playing) return false;
+        double end = maxEndSec();
+        if (end <= 0) {
+            // 空流程（一个片段都没有）：直接停，别让 playing 永远挂着
+            stop();
+            return true;
+        }
+        if (timeSec(gameTime) < end) return false;
+        if (loop) {
+            playFromStart(gameTime);   // 循环：立刻从 0 秒再来一遍（不经过停止态）
+        } else {
+            stop();                    // 单次：播完就停，回到常规渲染
+        }
+        return true;
     }
 
     /** 时间轴上所有片段的共同终点（秒）——也就是「流程结束」的时刻。 */
@@ -149,7 +208,7 @@ public final class SequenceTrack {
 
     /** 跳到某个时刻（编辑器里拖动播放头用）。 */
     public void seek(double sec, long gameTime) {
-        offsetSec = SequenceClip.clamp(sec, 0, MAX_SECONDS);
+        offsetSec = SequenceClip.clamp(sec, 0, Math.min(MAX_SECONDS, Math.max(MIN_SPAN_SEC, dynamicMaxSec())));
         startTick = gameTime;
     }
 
@@ -245,6 +304,7 @@ public final class SequenceTrack {
     public void mergeFrom(@Nullable SequenceTrack other) {
         if (other == null) return;
         this.playing = other.playing;
+        this.loop = other.loop;
         this.startTick = other.startTick;
         this.offsetSec = other.offsetSec;
         java.util.Map<UUID, SequenceClip> old = new java.util.HashMap<>();
@@ -277,6 +337,7 @@ public final class SequenceTrack {
         }
         t.put("clips", list);
         t.putBoolean("playing", playing);
+        t.putBoolean("loop", loop);
         t.putLong("start", startTick);
         t.putDouble("offset", offsetSec);
         return t;
@@ -291,6 +352,7 @@ public final class SequenceTrack {
             if (c.widgetId != null) track.clips.add(c);
         }
         track.playing = t.getBoolean("playing");
+        track.loop = t.getBoolean("loop");
         track.startTick = t.getLong("start");
         track.offsetSec = SequenceClip.clamp(t.getDouble("offset"), 0, MAX_SECONDS);
         return track;

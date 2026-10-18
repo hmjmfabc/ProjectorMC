@@ -9,6 +9,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.client.SelectionState;
+import top.hmjmfabc.projector.client.ClientPermissions;
 import top.hmjmfabc.projector.client.font.FontManager;
 import top.hmjmfabc.projector.client.render.PlaneRenderContext;
 import top.hmjmfabc.projector.client.render.QuadCollector;
@@ -20,6 +21,7 @@ import top.hmjmfabc.projector.common.text.FormatCodes;
 import top.hmjmfabc.projector.common.widget.ClockWidget;
 import top.hmjmfabc.projector.common.widget.Fonts;
 import top.hmjmfabc.projector.common.widget.ImageWidget;
+import top.hmjmfabc.projector.client.music.MusicManager;
 import top.hmjmfabc.projector.common.widget.MusicWidget;
 import top.hmjmfabc.projector.common.widget.ProgressWidget;
 import top.hmjmfabc.projector.common.widget.TextWidget;
@@ -50,7 +52,15 @@ public class WidgetEditorScreen extends ProjectorScreen {
     private final Plane plane;
     private final Widget widget;
     private final Screen parent;
-    private final boolean canEdit;
+    /**
+     * 【27.2.4-200 修】以前是 {@code private final boolean canEdit}（构造期快照）。
+     * 但 {@code plane.protectContent} / {@code plane.creator} 是**异步同步**下来的，
+     * 界面开早一点快照就是 false ⇒ 整个编辑器永久只读，保存时还静默丢弃。
+     * 现在改成方法，每次用的时候现算（与 {@code PlaneDialogScreen.refreshGates()} 同口径）。
+     */
+    private boolean canEdit() {
+        return top.hmjmfabc.projector.client.ClientPermissions.canEditContent(plane);
+    }
 
     @Nullable
     private EditBox textBox;
@@ -123,7 +133,6 @@ public class WidgetEditorScreen extends ProjectorScreen {
         this.parent = parent;
         // 与服务端 PlanePermissions 逐条对齐：权限等级 ≥ 2 **或本机就是房主** 都算管理员
         // （用户 ⑥.1）。以前这里只认权限等级，于是单人存档没开作弊时房主自己都改不了自己的控件。
-        this.canEdit = top.hmjmfabc.projector.client.ClientPermissions.canEditContent(plane);
         this.initialSnapshot = widget.save();
         this.initialDurationSeconds = widget instanceof ProgressWidget pw ? pw.durationSeconds : -1;
         if (widget instanceof TextWidget tw0) {
@@ -265,13 +274,13 @@ public class WidgetEditorScreen extends ProjectorScreen {
                         vw.setPausedAt(!vw.paused, System.currentTimeMillis());
                         rebuildWidgets();
                     });
-            playBtn.active = canEdit;
+            playBtn.active = canEdit();
             Button loopBtn = button(vw.loop ? "\u5faa\u73af\uff1a\u5f00" : "\u5faa\u73af\uff1a\u5173",
                     cx + cw / 2 + 2, y, cw / 2 - 6, 18, b -> {
                         vw.loop = !vw.loop;
                         rebuildWidgets();
                     });
-            loopBtn.active = canEdit;
+            loopBtn.active = canEdit();
             y += 22;
             // 【27.1.3】在线视频：把链接粘进来就行（B 站 BV/av/b23.tv 短链/番剧 ep·ss/直播，
             // 或任意 http(s) 直链）。留空 = 回到上面「替换视频」选的那个素材。
@@ -295,7 +304,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
                                         vw.id.toString().substring(0, 8), norm);                            }
                         }
                     });
-            onlineLinkBox.setEditable(canEdit);
+            onlineLinkBox.setEditable(canEdit());
             y += 22;
             // 【27.1.3】在线源的播放方式开关（只对在线链接有意义）：
             //   默认「流式」= 不解码前先下载，边下边播（省磁盘、不用等）；
@@ -310,7 +319,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
                         top.hmjmfabc.projector.client.media.net.OnlineVideoCache.reset(vw.sourceUrl);
                         rebuildWidgets();
                     });
-            streamBtn.active = canEdit;
+            streamBtn.active = canEdit();
             y += 22;
             // 【27.1.2】不提供「播放后端」选项：能放就放，放不了自动换另一条路。
             //（控件里仍保留 backend 字段以兼容旧存档，界面不再暴露。）
@@ -421,7 +430,12 @@ public class WidgetEditorScreen extends ProjectorScreen {
             if (y + 22 <= bottomLimit) {
                 button(pw.running ? "\u6682\u505c\u81ea\u52a8\u63a8\u8fdb" : "\u5f00\u59cb\u81ea\u52a8\u63a8\u8fdb",
                         cx + 4, y, cw - 8, 18, b -> {
-                    sendAction(pw.running ? "pause" : "resume", new CompoundTag());
+                    // 【27.2.4-200 修】本地先翻转再提交，然后重建按钮 —— 否则标签永远停在旧状态
+                    // （按钮文字是 init() 里算出来的一次性字符串，不重建不会变）。
+                    boolean next = !pw.running;
+                    pw.running = next;
+                    sendAction(next ? "resume" : "pause", new CompoundTag());
+                    rebuildWidgets();
                 });
             }
         } else if (widget instanceof top.hmjmfabc.projector.common.widget.TimerWidget tm) {
@@ -434,11 +448,13 @@ public class WidgetEditorScreen extends ProjectorScreen {
             y = musicBranch(mw, cx, y, cw);
         } else if (widget instanceof top.hmjmfabc.projector.common.widget.WebWidget web) {
             y = webBranch(web, cx, y, cw);
+        } else if (widget instanceof top.hmjmfabc.projector.common.widget.ItemWidget itw) {
+            y = itemBranch(itw, cx, y, cw);
         }
 
         // 底部按钮
         int by = this.height - pad - 22;
-        button(canEdit ? "\u4fdd\u5b58\u5e76\u8fd4\u56de" : "\u5173\u95ed\uff08\u65e0\u6743\u4fee\u6539\uff09",
+        button(canEdit() ? "\u4fdd\u5b58\u5e76\u8fd4\u56de" : "\u5173\u95ed\uff08\u65e0\u6743\u4fee\u6539\uff09",
                 cx + 4, by, cw / 2 - 6, 20, b -> save());
         // 「取消」：恢复进入编辑器时的状态并返回（触屏环境没有 ESC 时的唯一退路）
         button("\u53d6\u6d88", cx + 4, by - 22, cw / 2 - 6, 18, b -> cancel());
@@ -453,7 +469,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
                 // 直接回到「管理平面」界面（而不是退回编辑器再让玩家自己关）。
                 Minecraft.getInstance().setScreen(new PlaneDialogScreen(plane));
             }));
-        }).active = canEdit;
+        }).active = canEdit();
     }
 
     private static String alignName(int align) {
@@ -535,7 +551,13 @@ public class WidgetEditorScreen extends ProjectorScreen {
                 rebuildWidgets();
             });
             button(tm.running ? "\u6682\u505c" : "\u7ee7\u7eed", cx + 8 + third, y, third, 18,
-                    b -> sendAction(tm.running ? "pause" : "resume", new CompoundTag()));
+                    b -> {
+                        // 【27.2.4-200】同 progress：本地翻转 + 重建，否则「暂停/继续」永远显示旧标签
+                        boolean next = !tm.running;
+                        tm.running = next;
+                        sendAction(next ? "resume" : "pause", new CompoundTag());
+                        rebuildWidgets();
+                    });
             button("\u5f52\u96f6", cx + 12 + third * 2, y, third, 18,
                     b -> sendAction("reset", new CompoundTag()));
             y += 22;
@@ -708,7 +730,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
             // 空间不足：跳过这一行（宁可少几个滑块，也不要把按钮挤出屏幕）
             return y + 22;
         }
-        if (!canEdit) {
+        if (!canEdit()) {
             // 无权限时不注册可交互控件，避免玩家白忙一场后被服务端静默拒绝
             rowLabels.put(y, name);
             return y + 22;
@@ -753,6 +775,10 @@ public class WidgetEditorScreen extends ProjectorScreen {
         if (target instanceof top.hmjmfabc.projector.common.widget.ChessWidget) {
             return new String[]{"\u8fb9\u6846\u8272", "\u683c\u7ebf\u8272",
                     "\u68cb\u76d8\u5e95\u8272", "\u6700\u540e\u4e00\u624b"};
+        }
+        // 【27.2.2】展示框：轮廓色（框里物品的贴图色由物品本身决定，不给调）
+        if (target instanceof top.hmjmfabc.projector.common.widget.ItemWidget) {
+            return new String[]{"\u8f6e\u5ed3\u8272"};
         }
         return null;
     }
@@ -858,7 +884,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
             rebuildWidgets();
             // 尺寸变了要一并提交，否则只有本地看着正常
             saveInternal();
-        }).active = canEdit;
+        }).active = canEdit();
         y += 22;
         // 【27.2-pre-136】调色盘放在靠上的位置（本项目老教训：排最后的控件在屏幕矮时
         // 会被空间判断整行跳过，玩家看到的就是「没有这个功能」）。
@@ -869,7 +895,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
         button("\u5207\u6362\u6a21\u5f0f", cx + 4, y, cw - 8, 18, b -> {
             g.mode = (g.mode + 1) % top.hmjmfabc.projector.common.game.GameMode.NAMES.length;
             rebuildWidgets();
-        }).active = canEdit;
+        }).active = canEdit();
         y += 22;
         // 【⑪】AI 智能档位：正常（会失误）/ 高（原来那一版）/ 极限
         textRow("AI \u667a\u80fd\uff1a"
@@ -878,17 +904,17 @@ public class WidgetEditorScreen extends ProjectorScreen {
         button("\u5207\u6362 AI \u667a\u80fd", cx + 4, y, cw - 8, 18, b -> {
             g.difficulty = top.hmjmfabc.projector.common.game.GameDifficulty.next(g.difficulty);
             rebuildWidgets();
-        }).active = canEdit;
+        }).active = canEdit();
         y += 22;
         // 真正下棋在专门的对局界面里：六种棋的棋盘尺寸差得太多，
         // 在墙上那点面积里点格子既不准也不适合触屏。
         button("\u6253\u5f00\u5bf9\u5c40\u754c\u9762\u2026", cx + 4, y, cw - 8, 20, b ->
-                openChild(new ChessGameScreen(plane, ch, this))).active = canEdit;
+                openChild(new ChessGameScreen(plane, ch, this))).active = canEdit();
         y += 24;
         button("\u91cd\u65b0\u5f00\u5c40", cx + 4, y, cw - 8, 18, b -> {
             g.reset();
             rebuildWidgets();
-        }).active = canEdit;
+        }).active = canEdit();
         y += 22;
         button(ch.showGrid ? "\u683c\u7ebf\uff1a\u5f00" : "\u683c\u7ebf\uff1a\u5173", cx + 4, y, cw / 2 - 6, 18, b -> {
             ch.showGrid = !ch.showGrid;
@@ -988,6 +1014,12 @@ public class WidgetEditorScreen extends ProjectorScreen {
         if (target instanceof top.hmjmfabc.projector.common.widget.TimerWidget tm) {
             tm.color = argb;
             previewMessage = "\u989c\u8272\u5df2\u66f4\u65b0 " + hex6(argb);
+            return;
+        }
+        // 【27.2.2】展示框：调色盘改的是轮廓色
+        if (target instanceof top.hmjmfabc.projector.common.widget.ItemWidget itw) {
+            itw.outlineColor = argb;
+            previewMessage = "\u8f6e\u5ed3\u8272 " + hex6(argb);
             return;
         }
         String code = "&#" + hex6(argb);
@@ -1116,7 +1148,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
     }
 
     private void saveInternal() {
-        if (!canEdit) {
+        if (!canEdit()) {
             // 无权限：服务端一定会拒绝，不必浪费一次网络往返
             return;
         }
@@ -1227,6 +1259,11 @@ public class WidgetEditorScreen extends ProjectorScreen {
         PacketDistributor.sendToServer(new Payloads.PlaneEdit(plane.id, op, args));
     }
 
+    /** 墙钟毫秒（编辑器拖动 seek 的节流用；不用游戏刻，理由见 MusicManager 里的说明）。 */
+    private static long nowMs() {
+        return System.nanoTime() / 1_000_000L;
+    }
+
     private void sendAction(String action, CompoundTag args) {
         PacketDistributor.sendToServer(new Payloads.WidgetAction(plane.id, widget.id, action, args));
     }
@@ -1245,8 +1282,8 @@ public class WidgetEditorScreen extends ProjectorScreen {
         int pad = 10;
         int leftW = Math.max(150, Math.min(240, this.width / 3));
         labelShadow(gfx, kindName(widget), pad + 6, pad + 8, TEXT_ACCENT);
-        label(gfx, canEdit ? "\u53ef\u7f16\u8f91" : "\u53d7\u4fdd\u62a4\uff0c\u65e0\u6743\u4fee\u6539",
-                pad + 6, pad + this.height - pad * 2 - 12, canEdit ? TEXT_GREEN : TEXT_RED);
+        label(gfx, canEdit() ? "\u53ef\u7f16\u8f91" : "\u53d7\u4fdd\u62a4\uff0c\u65e0\u6743\u4fee\u6539",
+                pad + 6, pad + this.height - pad * 2 - 12, canEdit() ? TEXT_GREEN : TEXT_RED);
 
         // 滑块标签 + 当前数值（数值靠右对齐，方便确认调节结果）
         for (var e : rowLabels.entrySet()) {
@@ -1403,6 +1440,139 @@ public class WidgetEditorScreen extends ProjectorScreen {
      * <p>能改的东西：歌（打开音乐选择器）、音量、圆角、字号、颜色，以及
      * 「世界里点播放键就能启停」这个交互之外的手动控制按钮。</p>
      */
+    /**
+     * 【27.2.2】展示框（物品的二向化投影）编辑区。
+     *
+     * <p><b>排序原则</b>（本文件的老教训，已踩过两次）：布局在 {@code y > bottomLimit} 时
+     * 会整行跳过，所以常用功能必须排在最上面。这里的顺序是
+     * 「选择物品 → 状态/预览 → 调色盘 → 外观滑块 → 管理员指令绑定」。</p>
+     *
+     * <p><b>越权防线</b>：绑定指令的输入框只在 {@link ClientPermissions#isAdmin()}（权限等级 ≥ 2）
+     * 时才出现，但这只是「不给玩家白忙一场」；真正的判定在服务端
+     * （{@code ServerNetHandler} 的 {@code setItemCommand} 分支会拒绝非管理员并留痕）。</p>
+     */
+    private int itemBranch(top.hmjmfabc.projector.common.widget.ItemWidget iw, int cx, int y, int cw) {
+        final int half = cw / 2 - 6;
+        // ---- ① 选择物品：最常用，永远第一行 ----
+        String name = iw.itemName == null || iw.itemName.isBlank() ? iw.itemId : iw.itemName;
+        if (name == null || name.isBlank()) {
+            name = "\uff08\u672a\u9009\u62e9\uff09";
+        }
+        button("\u9009\u62e9\u7269\u54c1\uff1a" + shorten(name, 16), cx + 4, y, cw - 8, 20, b ->
+                openChild(new ItemPickerScreen(this, iw, stack -> {
+                    if (stack != null && !stack.isEmpty()) {
+                        iw.itemId = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                                .getKey(stack.getItem()).toString();
+                        iw.itemName = stack.getHoverName().getString();
+                        // 换了物品 ⇒ 框里原来那件等于没了，回到空框（免得显示成新物品却是旧状态）
+                        iw.placed = false;
+                        top.hmjmfabc.projector.client.render.ItemWidgetRenderer.noteChanged(iw.id);
+                    }
+                    rebuildWidgets();
+                })));
+        y += 24;
+
+        // ---- ② 状态 + 「世界里那一套动作」的本地预览 ----
+        // 世界内是右键放入 / 左键取出，编辑器里给一个等价的按钮，用来观察渐显渐隐与光球动画。
+        String who = iw.lastPlayer == null || iw.lastPlayer.isBlank() ? "" : "\uff08" + iw.lastPlayer + "\uff09";
+        textRow("\u72b6\u6001\uff1a" + (iw.placed ? "\u5df2\u653e\u5165" + who : "\u7a7a\u6846")
+                + (iw.hasItem() ? "" : "\uff5c\u8fd8\u6ca1\u9009\u7269\u54c1\uff0c\u4e16\u754c\u91cc\u653e\u4e0d\u8fdb\u53bb"), y);
+        y += 12;
+        if (y + 20 <= bottomLimit) {
+            button(iw.placed ? "\u9884\u89c8\uff1a\u53d6\u51fa\uff08\u5de6\u952e\u540c\u6548\uff09"
+                            : "\u9884\u89c8\uff1a\u653e\u5165\uff08\u53f3\u952e\u540c\u6548\uff09",
+                    cx + 4, y, cw - 8, 18, b -> {
+                if (iw.placed) {
+                    iw.take(gameTimeNow(), iw.lastPlayer);
+                } else {
+                    iw.place(gameTimeNow(), "");
+                }
+                top.hmjmfabc.projector.client.render.ItemWidgetRenderer.noteChanged(iw.id);
+                rebuildWidgets();
+            });
+            y += 22;
+        }
+
+        // ---- ③ 调色盘（改轮廓色；排在滑块之前，屏幕矮也不会被跳过）----
+        y = colorPalette(cx, y, cw, iw);
+
+        // ---- ④ 外观滑块 ----
+        // 【27.2.2-159】轮廓粗细固定为「物品贴图的一个像素」，不再给滑杆
+        // （用户：默认边框实在太厚了）
+        y = sliderRow(cx, y, cw, "\u8d34\u56fe\u7f29\u653e", 0.2, 1.6, iw.iconScale, false,
+                v -> iw.iconScale = v);
+        y = sliderRow(cx, y, cw, "\u8d34\u56fe\u65cb\u8f6c\u89d2\u5ea6", -180, 180, iw.iconRot, true,
+                v -> iw.iconRot = v);
+        y = sliderRow(cx, y, cw, "\u6a2a\u5411\u4f4d\u7f6e", -256, plane.width + 256, iw.x, true, v -> iw.x = v);
+        y = sliderRow(cx, y, cw, "\u7eb5\u5411\u4f4d\u7f6e", -256, plane.height + 256, iw.y, true, v -> iw.y = v);
+        y = sliderRow(cx, y, cw, "\u5bbd\u5ea6", 4, 512, iw.w, true, v -> iw.w = Math.max(2, v));
+        y = sliderRow(cx, y, cw, "\u9ad8\u5ea6", 4, 512, iw.h, true, v -> iw.h = Math.max(2, v));
+        y = sliderRow(cx, y, cw, "\u65cb\u8f6c\u89d2\u5ea6", -180, 180, iw.rot, true, v -> iw.rot = v);
+        y = sliderRow(cx, y, cw, "\u4e0d\u900f\u660e\u5ea6", 0.05, 1.0, iw.alpha, false,
+                v -> iw.alpha = (float) (double) v);
+        y = sliderRow(cx, y, cw, "\u5c42\u7ea7(z)", -20, 40, iw.zOff, true, v -> iw.zOff = v);
+
+        // ---- ⑤ 只有管理员（权限等级 ≥ 2）才看得到指令绑定 ----
+        if (ClientPermissions.isAdmin()) {
+            textRow("\u653e\u5165\u65f6\u6267\u884c\u7684\u6307\u4ee4\uff08\u53ef\u7559\u7a7a\uff1b\u5360\u4f4d\u7b26 "
+                    + "%player% %item% %x% %y% %z%\uff09", y);
+            itemPlaceCmdBox = editBox(cx + 4, y + 10, cw - 8, 18,
+                    iw.placeCommand == null ? "" : iw.placeCommand, 256, s -> iw.placeCommand = s);
+            y += 32;
+            if (y + 32 <= bottomLimit) {
+                textRow("\u53d6\u51fa\u65f6\u6267\u884c\u7684\u6307\u4ee4\uff08\u540c\u4e0a\uff09", y);
+                itemTakeCmdBox = editBox(cx + 4, y + 10, cw - 8, 18,
+                        iw.takeCommand == null ? "" : iw.takeCommand, 256, s -> iw.takeCommand = s);
+                y += 32;
+            }
+            if (y + 20 <= bottomLimit) {
+                button("\u6e05\u7a7a\u4e24\u6761\u6307\u4ee4", cx + 4, y, half, 18, b -> {
+                    iw.placeCommand = "";
+                    iw.takeCommand = "";
+                    if (itemPlaceCmdBox != null) itemPlaceCmdBox.setValue("");
+                    if (itemTakeCmdBox != null) itemTakeCmdBox.setValue("");
+                    previewMessage = "\u5df2\u6e05\u7a7a\u6307\u4ee4";
+                });
+                button("\u6307\u4ee4\u8bf4\u660e\u2026", cx + cw / 2 + 2, y, half, 18, b -> openChild(
+                        new ConfirmScreen(this, "\u5c55\u793a\u6846\u6307\u4ee4",
+                                "\u4e16\u754c\u91cc\u53f3\u952e\u653e\u5165 / \u5de6\u952e\u53d6\u51fa\u65f6\uff0c"
+                                        + "\u670d\u52a1\u7aef\u4f1a\u4ee5\u7ba1\u7406\u5458\u6743\u9650\u6267\u884c\u8fd9\u4e24\u6761\u6307\u4ee4\u3002"
+                                        + "\u5360\u4f4d\u7b26\uff1a%player% \u73a9\u5bb6\u540d\u3001%item% \u7269\u54c1 id\u3001"
+                                        + "%x% %y% %z% \u5e73\u9762\u951a\u70b9\u5750\u6807\u3002",
+                                () -> {})));
+                y += 22;
+            }
+        } else if (y + 24 <= bottomLimit) {
+            textRow("\u7ed1\u5b9a\u6307\u4ee4\uff1a\u53ea\u6709\u6743\u9650\u7b49\u7ea7 \u2265 2 \u7684\u7ba1\u7406\u5458\u80fd\u8bbe\u7f6e", y);
+            y += 12;
+        }
+        return y;
+    }
+
+    /** 展示框的指令输入框（只对管理员创建；重建界面时会重新生成）。 */
+    private EditBox itemPlaceCmdBox;
+    private EditBox itemTakeCmdBox;
+
+    /**
+     * 【27.2.2】「登录网易云」按钮的文案。
+     *
+     * <p>登录状态直接写在按钮上 —— 玩家不用点进去才知道自己登没登录。
+     * 整段包 try/catch：配置还没加载时（构造期）读它会抛异常，
+     * 界面上少一行字也比整个编辑器崩掉强。</p>
+     */
+    static String loginLabel() {
+        try {
+            String cookie = top.hmjmfabc.projector.compat.betterlogin.config.GeneralConfig
+                    .getCookie();
+            if (cookie != null && !cookie.isBlank()) {
+                return "\u7f51\u6613\u4e91\uff1a\u5df2\u767b\u5f55\uff08\u70b9\u6b64\u91cd\u65b0\u767b\u5f55\uff09";
+            }
+        } catch (Throwable ignored) {
+            // 读不到配置就当没登录
+        }
+        return "\u767b\u5f55\u7f51\u6613\u4e91\uff08\u624b\u673a / \u90ae\u7bb1 / \u626b\u7801\uff09";
+    }
+
     private int musicBranch(MusicWidget mw, int cx, int y, int cw) {
         String name = mw.title == null || mw.title.isBlank() ? "（未选择音乐）" : mw.title;
         if (mw.artist != null && !mw.artist.isBlank()) {
@@ -1420,6 +1590,14 @@ public class WidgetEditorScreen extends ProjectorScreen {
                 })));
         y += 24;
 
+        // 【27.2.2】播放列表 + 网易云登录：用户明确要求「音乐控件要有播放列表和登录按钮」。
+        // 放在选择音乐之后、调色盘之前 —— 都是常用功能，排在滑块前面才不会被空间判断跳过。
+        button("\u64ad\u653e\u5217\u8868\uff1a" + mw.describePlaylist(), cx + 4, y, cw - 8, 20, b ->
+                openChild(new MusicPlaylistScreen(this, plane, mw)));
+        y += 24;
+        // 【27.2.2-154 用户口径】「登录网易云」**不在编辑器里**，放在**选歌界面**
+        //（登录就是为了搜到 VIP / 高码率的歌，那件事发生在选歌那一屏）。
+        // 登录状态由 WidgetEditorScreen.loginLabel() 提供，选歌界面直接调用它。
         // 【27.2-pre-136】调色盘上移到分支前部：它现在管「进度色 / 边框色」两个部位，
         // 是音乐控件最常用的外观设置，排到最后会被空间判断跳过。
         y = colorPalette(cx, y, cw, mw);
@@ -1435,17 +1613,25 @@ public class WidgetEditorScreen extends ProjectorScreen {
             button(mw.playing ? "\u6682\u505c\uff08\u4e16\u754c\u91cc\u70b9\u64ad\u653e\u952e\u4e5f\u884c\uff09"
                             : "\u5f00\u59cb\u64ad\u653e\uff08\u4e16\u754c\u91cc\u70b9\u64ad\u653e\u952e\u4e5f\u884c\uff09",
                     cx + 4, y, cw - 8, 18, b -> {
+                // 【27.2.4-200 修】本地翻转 + 重建：否则「开始播放/暂停」标签永远不变
                 CompoundTag extra = new CompoundTag();
-                sendAction(mw.playing ? "pause" : "resume", extra);
+                boolean next = !mw.playing;
+                mw.playing = next;
+                sendAction(next ? "resume" : "pause", extra);
+                rebuildWidgets();
             });
             y += 22;
         }
 
         y = sliderRow(cx, y, cw, "\u64ad\u653e\u8fdb\u5ea6", 0.0, 1.0, mw.progressAt(
                 top.hmjmfabc.projector.client.music.MusicManager.gameTime()), false, v -> {
+            // 【27.2.3-hotfix-142】拖进度条：**本机先动**（与世界内点波形条同一套），
+            // 而不是只发一条请求等回声。以前拖着走会连发几十条 seek、每条都让服务端
+            // 重锚 + 本机重开音频流 ⇒ 卡成一串。
+            // 这里再节流：拖动过程中每 250ms 才真的发一条（最后停在哪儿就以哪条为准）。
             CompoundTag extra = new CompoundTag();
             extra.putDouble("fraction", v);
-            sendAction("seek", extra);
+            MusicManager.seekInWorldForEditor(plane, mw, v, nowMs(), true);
         });
         y = sliderRow(cx, y, cw, "\u97f3\u91cf", 0.0, 1.0, mw.volume, false, v -> mw.volume = v);
         y = sliderRow(cx, y, cw, "\u5706\u89d2\u534a\u5f84", 0, 24, mw.corner, true, v -> mw.corner = v);
@@ -1518,7 +1704,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
                                 ? "" : plainLang("projector.msg.web_bad_url",
                                         "\u5730\u5740\u65e0\u6548\uff08\u53ea\u652f\u6301 http/https\uff09");
                     });
-            webUrlBox.setEditable(canEdit);
+            webUrlBox.setEditable(canEdit());
             y += 34;
         }
 
@@ -1534,13 +1720,13 @@ public class WidgetEditorScreen extends ProjectorScreen {
                         }
                         rebuildWidgets();
                     });
-            ctrlBtn.active = canEdit;
+            ctrlBtn.active = canEdit();
             Button pubBtn = button(ww.publicControls ? "\u4ed6\u4eba\uff1a\u53ef\u64cd\u4f5c" : "\u4ed6\u4eba\uff1a\u7981\u6b62",
                     cx + 6 + third, y, third, 18, b -> {
                         ww.publicControls = !ww.publicControls;
                         rebuildWidgets();
                     });
-            pubBtn.active = canEdit;
+            pubBtn.active = canEdit();
             Button transBtn = button(ww.transparent ? "\u80cc\u666f\uff1a\u900f\u660e" : "\u80cc\u666f\uff1a\u4e0d\u900f\u660e",
                     cx + 8 + third * 2, y, third, 18, b -> {
                         ww.transparent = !ww.transparent;
@@ -1548,7 +1734,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
                         top.hmjmfabc.projector.client.web.WebControls.reveal(ww.id);
                         rebuildWidgets();
                     });
-            transBtn.active = canEdit;
+            transBtn.active = canEdit();
             y += 22;
         }
 
@@ -1567,7 +1753,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
             button(ww.background == 0 ? "\u5e95\u8272\uff1a\u65e0" : "\u5e95\u8272\uff1a\u6709", cx + 4, y, cw - 8, 18, b -> {
                 ww.background = ww.background == 0 ? 0x80000000 : 0;
                 rebuildWidgets();
-            }).active = canEdit;
+            }).active = canEdit();
             y += 22;
         }
         // ---- 最后两行说明（snapshot-127 用户口径）：世界里**左键**点画面 = 操作页面；
@@ -1594,7 +1780,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
 
     /** 编辑器里按了导航按钮：先本地生效，再发一条给服务端留审计。 */
     private void webButton(top.hmjmfabc.projector.common.widget.WebWidget ww, int index, String message) {
-        if (!canEdit) {
+        if (!canEdit()) {
             // 自己都改不了内容时，编辑器里的导航按钮只对本机生效也没意义 —— 与其它按钮一致
             previewMessage = "\u53d7\u4fdd\u62a4\uff0c\u65e0\u6743\u64cd\u4f5c";
             return;
@@ -1613,7 +1799,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
         if (webUrlBox == null || !(widget instanceof top.hmjmfabc.projector.common.widget.WebWidget ww)) {
             return;
         }
-        if (!canEdit) {
+        if (!canEdit()) {
             return;
         }
         String raw = webUrlBox.getValue();
@@ -1672,6 +1858,7 @@ public class WidgetEditorScreen extends ProjectorScreen {
             case Widget.KIND_CHESS -> "\u68cb\u7c7b\u6e38\u620f\u63a7\u4ef6";
             case Widget.KIND_MUSIC -> "\u97f3\u4e50\u63a7\u4ef6";
             case Widget.KIND_WEB -> "\u7f51\u9875\u63a7\u4ef6";
+            case Widget.KIND_ITEM -> "\u5c55\u793a\u6846";
             default -> "\u63a7\u4ef6";
         };
     }

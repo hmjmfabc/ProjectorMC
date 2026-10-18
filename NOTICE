@@ -6,6 +6,20 @@ Homepage: https://github.com/hmjmfabc/ProjectorMC
 
 Bundled third-party components
 ------------------------------
+
+Incorporated source (27.2.2)
+----------------------------
+* **Net Music: Better Login** (modid `netmusicbetterlogin`) — © IMG, **MIT License**.
+  Its source has been **incorporated into this mod** (package renamed to
+  `top.hmjmfabc.projector.compat.betterlogin`), so players get NetEase account login (phone /
+  e-mail / QR) without installing a second mod. Changes made while incorporating it:
+  - package renamed and the four imports of the "Net Music" (netmusic) API rewired to this
+    mod's own mirrored API (`top.hmjmfabc.projector.compat.netmusic.api`);
+  - its `@Mod` entrypoint replaced by an `init()` call from this mod;
+  - its own config file replaced by this mod's config
+    (`music.neteaseCookie` / `music.neteaseLevel`);
+  - the Cloth Config settings page removed (this mod does not depend on Cloth Config).
+  Upstream: https://github.com/xiaoyu-ovo/NetMusic-BetterLogin (see the bundled source headers).
 * **No video decoder is bundled any more** (27.1.3): the built-in JCodec-based converter and the
   MJPEG / ZIP frame-sequence backend were removed. Video playback is delegated to the optional
   WaterMedia mod at runtime (see below).
@@ -17,6 +31,9 @@ Bundled third-party components
   - jflac-codec 1.5.3 (FLAC) — Josh Coalson / jFLAC project, BSD-style license.
   - javasound-aac 0.9.6, bundled with JAAD (AAC / M4A decoding, includes an MP4 container parser)
     — GNU LGPL 2.1. https://sourceforge.net/projects/jaadec/
+  - zxing core 3.5.4 (27.2.2, **QR code generation only**: the NetEase login screen's
+    scan-to-login path; pure Java, no native library, so it runs on Android)
+    — ZXing Authors, Apache License 2.0. https://github.com/zxing/zxing
   None of these libraries are modified, and none of their source is copied into
   this project's own source tree.
 * Optional runtime interop with WaterMedia (https://modrinth.com/mod/watermedia):

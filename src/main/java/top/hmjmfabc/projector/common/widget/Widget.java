@@ -33,16 +33,34 @@ public abstract class Widget {
     /** 【27.2】网页控件（可选的客户端前置模组 MCEF 渲染网页）。 */
     public static final int KIND_WEB = 10;
 
+    /**
+     * 【27.2.2】展示框（物品的「二向化」投影，用户要求，简称「展示框」）。
+     * <p>把选定的物品投影到平面上：右键放入、左键取出，轮廓可调色/旋转/缩放。</p>
+     */
+    public static final int KIND_ITEM = 11;
+
     public static final String[] KIND_IDS = {
             "text", "image", "video", "clock", "weather", "progress", "timer", "leaderboard",
-            "chess", "music", "web"};
+            "chess", "music", "web", "item"};
 
     public UUID id = UUID.randomUUID();
     /** 锚点（左下角）在画布中的坐标。 */
     public double x, y;
     /** 尺寸（画布单位）。 */
     public double w, h;
-    /** 旋转角度（度，逆时针，绕锚点）。 */
+    /**
+     * 旋转角度（度，逆时针）。
+     *
+     * <p>⚠ <b>旋转轴心是控件的中心</b>（{@link #rotX()}/{@link #rotY()}），
+     * 不是左下角 —— 27.2.1-hotfix-144 统一的。</p>
+     *
+     * <p>「绕左下角转」是本项目一个千年老 bug 的根因：一旋转，控件就绕左下角甩出去
+     * （180° 直接甩到左下方向的另一侧），玩家看到的是「转完位置就错了」；
+     * 更糟的是渲染、选中框、命中检测三处各自用了不同的轴心，
+     * 于是「框不跟着转」「框和内容对不上」。现在**所有**旋转都必须走
+     * {@link #rotX()}/{@link #rotY()}/{@link #rotPt(double, double)}，
+     * 不许再出现第二份轴心。</p>
+     */
     public double rot;
     /**
      * 沿外法线的分层序号（不是长度单位！）。
@@ -90,26 +108,118 @@ public abstract class Widget {
         return new double[]{minX(), minY(), maxX(), maxY()};
     }
 
+    // ------------------------------------------------------------------
+    // 旋转几何（**唯一真源**，27.2.1-hotfix-144）
+    // ------------------------------------------------------------------
+
     /**
-     * 命中检测。{@code px,py} 为画布坐标；{@code tolerance} 为外扩容差。
-     * 内部会把点绕锚点逆旋转回未旋转坐标系。
+     * 旋转轴心（**画布坐标**）的 x —— 控件中心。
+     *
+     * <p>⚠ 两套「中心」在这里并存，别混（本文件最容易被改坏的地方）：</p>
+     * <ul>
+     *   <li>{@link #rotX()}/{@link #rotY()} = **画布坐标**的中心 —— 给
+     *       {@code TextRenderer.drawInBox(…, pivotX, pivotY)} 与
+     *       {@code TextRenderer.rot(…) } 当轴心（它们收的是画布坐标）；</li>
+     *   <li>{@link #localRotX()}/{@link #localRotY()} = **局部坐标**（0..w）的中心 ——
+     *       给 {@link #rotPt} 这类「局部 → 画布」的换算当轴心。</li>
+     * </ul>
+     * <p>曾经把 {@code rotX()} 改成返回局部值，结果所有 `drawInBox` 的轴心都偏了
+     * （音乐标题/时间、排行榜……整体挪到左下一个 (x, y)）。别再改它的语义。</p>
      */
-    public boolean hitTest(double px, double py, double tolerance) {
-        double theta = Math.toRadians(-rot);
-        double dx = px - x, dy = py - y;
-        double cos = Math.cos(theta), sin = Math.sin(theta);
-        double rx = x + dx * cos - dy * sin;
-        double ry = y + dx * sin + dy * cos;
-        double[] b = aabb();
-        return rx >= b[0] - tolerance && ry >= b[1] - tolerance && rx <= b[2] + tolerance && ry <= b[3] + tolerance;
+    public double rotX() {
+        return x + w / 2.0;
     }
 
-    /** 把画布坐标点转换到「未旋转的本控件坐标系」中的相对位置。 */
+    /** 旋转轴心的 y（**画布坐标**，见 {@link #rotX()}）。 */
+    public double rotY() {
+        return y + h / 2.0;
+    }
+
+    /** 旋转轴心的 x（**局部坐标**，0..w）—— 只给局部↔画布的换算用。 */
+    public double localRotX() {
+        return w / 2.0;
+    }
+
+    /** 旋转轴心的 y（**局部坐标**，0..h）。 */
+    public double localRotY() {
+        return h / 2.0;
+    }
+
+    /**
+     * 把「控件局部坐标」（相对左下角，未旋转）映射到**画布坐标**：
+     * 绕局部中心旋转，再加上控件左下角。
+     */
+    public double[] rotPt(double lx, double ly) {
+        double[] r = rotAround(localRotX(), localRotY(), rot, lx, ly);
+        return new double[]{x + r[0], y + r[1]};
+    }
+
+    /** 把「控件局部坐标」的四个角映射到画布（顺序：左下、右下、右上、左上）。 */
+    public double[][] rotCorners() {
+        return new double[][]{rotPt(0, 0), rotPt(w, 0), rotPt(w, h), rotPt(0, h)};
+    }
+
+    /** 旋转后的包围盒（画布坐标，轴对齐）。 */
+    public double[] rotatedAabb() {
+        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+        for (double[] c : rotCorners()) {
+            minX = Math.min(minX, c[0]);
+            minY = Math.min(minY, c[1]);
+            maxX = Math.max(maxX, c[0]);
+            maxY = Math.max(maxY, c[1]);
+        }
+        return new double[]{minX, minY, maxX, maxY};
+    }
+
+    /**
+     * 把**画布坐标**逆旋转回「未旋转的局部坐标系」（相对左下角）—— {@link #rotPt} 的逆运算。
+     *
+     * <p>要求「值域仍是画布坐标系」的调用方（例如棋类：{@code centerOf} 给的是画布坐标、
+     * 只差一个旋转）用 {@link #toLocalAbs}；要求「相对左下角的偏移」的调用方
+     * （{@code hitButton}/{@code hitControl}/{@code seekFractionAt}…）用 {@link #toLocal}。</p>
+     */
     public double[] toLocal(double px, double py) {
-        double theta = Math.toRadians(-rot);
-        double dx = px - x, dy = py - y;
+        return toLocalAbs(px, py);
+    }
+
+    /**
+     * 把**画布坐标**映射回「未旋转的**局部**坐标系」——即几何原点 {@code ox/oy} 所在的坐标系。
+     *
+     * <p>算法顺序是铁的：**先减左下角**（画布 → 局部），**再绕局部中心逆旋转**。
+     * 两个坐标系（画布 / 相对左下角）混着用就会整体偏 {@code (x, y)} ——
+     * 玩家看到的就是「棋类控件的棋盘与实际操作空间偏移很严重」，本轮栽过一次。</p>
+     *
+     * <p>与 {@link #rotPt}（局部 → 画布）正好互为逆运算：
+     * {@code toLocalAbs(rotPt(lx, ly)) == (lx, ly)}。</p>
+     */
+    public double[] toLocalAbs(double px, double py) {
+        return rotAround(localRotX(), localRotY(), -rot, px - x, py - y);
+    }
+
+    /** 绕任意轴心逆时针旋转一个点（公用的那一条公式，别再抄第四遍）。 */
+    public static double[] rotAround(double ax, double ay, double rotDeg, double px, double py) {
+        if (rotDeg == 0.0) {
+            return new double[]{px, py};
+        }
+        double theta = Math.toRadians(rotDeg);
         double cos = Math.cos(theta), sin = Math.sin(theta);
-        return new double[]{dx * cos - dy * sin, dx * sin + dy * cos};
+        double dx = px - ax, dy = py - ay;
+        return new double[]{ax + dx * cos - dy * sin, ay + dx * sin + dy * cos};
+    }
+
+    /**
+     * 命中检测。{@code px,py} 为画布坐标；{@code tolerance} 为外扩容差。
+     *
+     * <p>把点**绕控件中心逆旋转**回局部坐标再判矩形 —— 与渲染用的是同一个轴心
+     * （以前渲染绕左下角、命中绕左下角，但选中框绕中心，三处对不上）。</p>
+     */
+    public boolean hitTest(double px, double py, double tolerance) {
+        // toLocalAbs 的值域是**局部坐标系**（相对左下角），所以这里必须拿
+        // 「以左下角为原点的矩形」去比 —— 用 aabb()（**画布**坐标）比会整体偏 (x, y)。
+        double[] l = toLocalAbs(px, py);
+        return l[0] >= -tolerance && l[1] >= -tolerance
+                && l[0] <= w + tolerance && l[1] <= h + tolerance;
     }
 
     /** 将本控件坐标系中的方向向量旋转到画布坐标系。 */
@@ -209,6 +319,7 @@ public abstract class Widget {
             case KIND_CHESS -> new ChessWidget();
             case KIND_MUSIC -> new MusicWidget();
             case KIND_WEB -> new WebWidget();
+            case KIND_ITEM -> new ItemWidget();
             default -> null;
         };
     }

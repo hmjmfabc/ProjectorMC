@@ -10,6 +10,9 @@ import net.minecraft.world.phys.shapes.CollisionContext;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.ProjectorConfig;
@@ -60,6 +63,7 @@ public final class ClientInputHandler {
         handleKey(mc, ProjectorKeys.KEY_CAPTURE);
         handleKey(mc, ProjectorKeys.KEY_CANCEL);
         handleKey(mc, ProjectorKeys.KEY_MEDIA_HELP);
+        handleKey(mc, ProjectorKeys.KEY_SEQ_REPLAY);
     }
 
     /**
@@ -121,8 +125,41 @@ public final class ClientInputHandler {
                 onCancel(mc);
             } else if (key == ProjectorKeys.KEY_MEDIA_HELP) {
                 onMediaHelp(mc);
+            } else if (key == ProjectorKeys.KEY_SEQ_REPLAY) {
+                onSeqReplay(mc);
             }
         }
+    }
+
+    /**
+     * 【27.2.1-hotfix-144 用户要求】I：对着**已选中的平面**重播流程。
+     *
+     * <p>三种情况：</p>
+     * <ol>
+     *   <li>没选中平面 ⇒ 什么都不做（I 还是网页控件的「输入给网页」，见 {@code onKeyInput}）；</li>
+     *   <li>选中了、但这个平面**还没有流程** ⇒ 聊天栏上方提示「尚未添加流程」；</li>
+     *   <li>选中了、也有流程 ⇒ 发 {@code seqPlay}（服务端流程权威，与编辑器里的「重播」
+     *       按钮走同一条 {@code PlaneEdit} 通道），并提示一句「正在重播流程」。</li>
+     * </ol>
+     */
+    private void onSeqReplay(Minecraft mc) {
+        Plane plane = SelectionState.plane();
+        if (plane == null || mc.player == null) {
+            return;                       // 没选中平面：这个键不归我们管
+        }
+        if (plane.sequence == null || plane.sequence.isEmpty()) {
+            mc.player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("projector.msg.seq_empty"), true);
+            top.hmjmfabc.projector.Projector.LOGGER.info(
+                    "[Projector] I 键重播流程：这个平面还没有流程（平面 {}）", plane.id);
+            return;
+        }
+        PacketDistributor.sendToServer(
+                new Payloads.PlaneEdit(plane.id, "seqPlay", new CompoundTag()));
+        mc.player.displayClientMessage(
+                net.minecraft.network.chat.Component.translatable("projector.msg.seq_replay"), true);
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector] I 键重播流程：平面 {}，共 {} 段", plane.id, plane.sequence.size());
     }
 
     // ------------------------------------------------------------------
@@ -168,11 +205,30 @@ public final class ClientInputHandler {
     // ------------------------------------------------------------------
 
     private void onCancel(Minecraft mc) {
-        if (SelectionState.hasSelection()) {
-            SelectionState.clear();
-            if (mc.player != null) {
-                mc.player.displayClientMessage(Component.translatable("projector.msg.selection_cleared"), true);
-            }
+        if (!SelectionState.hasSelection()) {
+            return;
+        }
+        Plane wasSelected = SelectionState.plane();
+        SelectionState.clear();
+        // 【27.2.2-160 用户要求】**没有控件的平面被取消选中后自动删除**。
+        // 按一次 U 就会建一个平面，玩家不想用就走人 ⇒ 空壳越攒越多，
+        // 以后按 U 还会选中一个"什么都没有的壳"。这里顺手收掉。
+        //
+        // 【161】这条请求必须带 ifEmpty=true：服务端拿它区分「客户端认为它是空壳」与
+        // 「玩家主动点删除」，并以**服务端自己那份数据**为准再确认一次。
+        // 160 的复活 bug 曾把控件清空 ⇒ 客户端"名正言顺"地把玩家的平面删了 ——
+        // 内容丢失被放大成数据丢失，所以这个判定权必须留在权威端。
+        if (wasSelected != null && wasSelected.widgets.isEmpty()) {
+            CompoundTag tag = new CompoundTag();
+            tag.putBoolean("ifEmpty", true);
+            top.hmjmfabc.projector.client.gui.PlaneDialogScreen.sendFor(
+                    wasSelected, "deletePlane", tag);
+            top.hmjmfabc.projector.Projector.LOGGER.info(
+                    "[Projector] 取消选中：顺手删掉没有控件的平面 {}（服务端会再确认一次）",
+                    wasSelected.id.toString().substring(0, 8));
+        }
+        if (mc.player != null) {
+            mc.player.displayClientMessage(Component.translatable("projector.msg.selection_cleared"), true);
         }
     }
 
@@ -219,7 +275,11 @@ public final class ClientInputHandler {
         // 【27.1.3】点过就算「我要看」⇒ 允许下载（三种点击都算：叫出控件 / 播放键 / 进度条）
         top.hmjmfabc.projector.client.media.VideoControls.request(video.id);
 
-        if (visible && video.hitControl(cx, cy)) {
+        // 【27.2.4-201】按「播放键」的位置点下去就必须启停，**不管控件此刻有没有浮出来**。
+        // 以前只有 visible 时才认播放键：控件 5 秒没操作会自动隐藏，玩家再点同一个位置
+        // 只把控件叫出来、视频没暂停 —— 表现就是「暂停键有时按不动」（这一次点击被吃掉了）。
+        // 热区里**其它**位置仍然只叫出控件（不改状态），所以「想调出来却误触暂停」也不会发生。
+        if (video.hitControl(cx, cy)) {
             top.hmjmfabc.projector.client.media.VideoControls.toggleInWorld(plane, video);
             event.setCanceled(true);
             event.setSwingHand(false);
@@ -411,7 +471,11 @@ public final class ClientInputHandler {
         int key = event.getKey();
         boolean press = event.getAction() != 0;   // 0=松开；1=按下；2=长按重复（都按「按下」转发）
         if (key == top.hmjmfabc.projector.client.web.WebInput.KEY_INPUT_TEXT) {
-            if (press) {
+            // 【27.2.1-hotfix-144 优先级】I 键现在有两种含义，**选中平面时以流程为重**：
+            //   ① 已选中平面 ⇒ I = 重播流程（见 onSeqReplay，走 ProjectorKeys.KEY_SEQ_REPLAY）；
+            //   ② 没选中平面 ⇒ I = 给网页输入文字（原来那条）。
+            // 两边都响应的话同一次按键会同时弹输入界面又重播流程 —— 必须先在这里让路。
+            if (press && SelectionState.plane() == null) {
                 openWebInputScreen(mc);
             }
             return;
@@ -642,6 +706,13 @@ public final class ClientInputHandler {
         if (handleWebControl(mc, event, pageClick)) {
             return;
         }
+        // 【27.2.2-154】展示框：**左键取出**必须在这一行之前处理 ——
+        // 下面那道 `if (!event.isUseItem()) return;` 会把**所有左键**直接丢掉，
+        // 于是「左键取出」永远走不到控件分支（玩家报的「物品取不出来」就是这个：
+        // 处理代码一直都在，只是**永远执行不到**）。
+        if (handleItemFrameClick(mc, event)) {
+            return;
+        }
         if (!event.isUseItem()) return;
         // 【用户要求 ⑥.2】未选中任何平面时，右键**不能**打开控件编辑页面。
         // 以前这里是无条件拾取（先看选中平面、再看本维度其它平面），于是玩家
@@ -706,6 +777,9 @@ public final class ClientInputHandler {
             }
             // 既不在播放键、也不在波形条上 ⇒ 继续走「打开编辑器」
         }
+        // 【27.2.2-154】展示框不在这里处理了 —— 它有自己的入口 handleItemFrameClick()，
+        // 位置在「只认右键」那道闸门之前（左键取出必须走得到）。
+        // ⚠ 别在这里再加一份：两处判定迟早会分叉（本项目的老教训）。
         // 【⑪】棋盘控件：右键**直接开始对局**，而不是先弹一堆设置。
         // 用户反馈「棋类游戏不能在游戏内进行对局」——以前必须先右键 →
         // 打开控件编辑器 → 再找「打开对局界面…」三步，太深了。
@@ -868,6 +942,145 @@ public final class ClientInputHandler {
     }
 
     /**
+     * 【27.2.2-154】展示框的世界内交互入口：**左右键都收，而且不要求先选中平面**。
+     *
+     * <p>为什么要单独一个入口：原先把展示框的处理放在了「打开编辑器」那一段里，
+     * 而前面有一道 {@code if (!event.isUseItem()) return;} —— 它会把**左键全部丢掉**
+     * ⇒ 左键取出**永远执行不到**（处理代码一直在，就是走不到）。
+     * 玩家报的「展示框物品不能取出」就是这个，与权限/状态判定毫无关系。</p>
+     *
+     * <p>不要求先选中平面：放入/取出是「用一下」而不是「改内容」，
+     * 与音乐控件的播放键同一个口径（用户要的是「点一下就该有反应」）。</p>
+     *
+     * @return true = 这次输入被展示框吃掉了（调用方应 return）
+     */
+    private boolean handleItemFrameClick(Minecraft mc,
+                                         InputEvent.InteractionKeyMappingTriggered event) {
+        if (mc.player == null || mc.level == null) {
+            return false;
+        }
+        if (!event.isUseItem() && !event.isAttack()) {
+            return false;
+        }
+        // 候选平面：选中的排最前，其余按距离由 pickWidgetOn 自己判
+        java.util.List<Plane> candidates = new java.util.ArrayList<>();
+        Plane selected = SelectionState.plane();
+        if (selected != null) {
+            candidates.add(selected);
+        }
+        for (Plane p : PlaneCache.planesIn(mc.level.dimension().location())) {
+            if (!candidates.contains(p)) {
+                candidates.add(p);
+            }
+        }
+        for (Plane p : candidates) {
+            // 便宜的先判：这个平面上一个展示框都没有，就别去射线求交了
+            //（左键是高频事件 —— 挖方块、攻击都会走到这里）
+            boolean any = false;
+            for (Widget w : p.widgets) {
+                if (w instanceof top.hmjmfabc.projector.common.widget.ItemWidget) {
+                    any = true;
+                    break;
+                }
+            }
+            if (!any) {
+                continue;
+            }
+            Widget hit = pickWidgetOn(p);
+            if (hit instanceof top.hmjmfabc.projector.common.widget.ItemWidget frame
+                    && handleItemFrame(mc, p, frame, event)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 【27.2.2】展示框的世界内交互。
+     *
+     * <p><b>右键 = 放入</b>、<b>左键 = 取出</b>（与用户口径一致）。两条规则：</p>
+     * <ul>
+     *   <li>放入要求玩家**手里拿着那件物品**（免得空手也能凭空变出来），
+     *       并且框要空着、控件要选好了物品；</li>
+     *   <li>取出只要求框里有东西。</li>
+     * </ul>
+     * <p>命令与真值都由服务端定夺（这里是乐观的本地动作 + 一次 {@code WidgetAction}）。</p>
+     *
+     * @return 这次输入被展示框吃掉了（调用方应 return）
+     */
+    private boolean handleItemFrame(Minecraft mc, Plane plane,
+                                    top.hmjmfabc.projector.common.widget.ItemWidget frame,
+                                    InputEvent.InteractionKeyMappingTriggered event) {
+        if (plane == null || mc.player == null) {
+            return false;
+        }
+        Vec3 eye = mc.player.getEyePosition(1.0f);
+        Vec3 dir = mc.player.getViewVector(1.0f);
+        Double t = intersectPlane(plane, eye, dir, ProjectorConfig.INSTANCE.selectDistance.get());
+        if (t == null) {
+            return false;
+        }
+        Vec3 hit = eye.add(dir.scale(t));
+        double cx = plane.canvasX(hit), cy = plane.canvasY(hit);
+        if (!frame.hitTest(cx, cy, 0.5)) {
+            return false;                 // 准心不在这个框上 ⇒ 交回原来的流程
+        }
+        boolean place = event.isUseItem();          // 右键 = 放入
+        boolean take = event.isAttack();            // 左键 = 取出
+        if (!place && !take) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (place) {
+            if (!frame.hasItem()) {
+                mc.player.displayClientMessage(
+                        net.minecraft.network.chat.Component.translatable("projector.msg.item_none_selected"), true);
+                return true;
+            }
+            if (frame.placed) {
+                return true;              // 已经有东西了：不放第二个
+            }
+            // 手里得拿着这件物品
+            boolean holding = mc.player.getMainHandItem().is(
+                    BuiltInRegistries.ITEM.get(ResourceLocation.tryParse(frame.itemId)));
+            if (!holding) {
+                mc.player.displayClientMessage(
+                        net.minecraft.network.chat.Component.translatable("projector.msg.item_empty_hand"), true);
+                return true;
+            }
+            frame.place(mc.level == null ? 0L : mc.level.getGameTime(), mc.player.getName().getString());
+            top.hmjmfabc.projector.client.render.ItemWidgetRenderer.noteChanged(frame.id);
+            sendFrameAction(plane, frame, "itemPlace");
+            top.hmjmfabc.projector.Projector.LOGGER.info(
+                    "[Projector][展示框] 放入 {}（平面={} 控件={}）",
+                    frame.itemId, plane.id.toString().substring(0, 8), frame.id.toString().substring(0, 8));
+        } else {
+            if (!frame.placed) {
+                return true;              // 空框：左键什么都不做
+            }
+            frame.take(mc.level == null ? 0L : mc.level.getGameTime(), mc.player.getName().getString());
+            top.hmjmfabc.projector.client.render.ItemWidgetRenderer.noteChanged(frame.id);
+            sendFrameAction(plane, frame, "itemTake");
+            top.hmjmfabc.projector.Projector.LOGGER.info(
+                    "[Projector][展示框] 取出 {}（平面={} 控件={}）",
+                    frame.itemId, plane.id.toString().substring(0, 8), frame.id.toString().substring(0, 8));
+        }
+        event.setCanceled(true);
+        event.setSwingHand(false);
+        return true;
+    }
+
+    /** 把展示框的状态变化提交给服务端（权威端会跑绑定的指令并广播）。 */
+    private static void sendFrameAction(Plane plane,
+                                        top.hmjmfabc.projector.common.widget.ItemWidget frame,
+                                        String action) {
+        CompoundTag args = new CompoundTag();
+        args.putBoolean("placed", frame.placed);
+        PacketDistributor.sendToServer(
+                new Payloads.WidgetAction(plane.id, frame.id, action, args));
+    }
+
+    /**
      * 这次右键是不是落在某个音乐控件的**播放键**上。
      *
      * <p>用控件自己的 {@code hitButton}（几何唯一来源），所以判定范围与画出来的播放键
@@ -888,13 +1101,43 @@ public final class ClientInputHandler {
         double cx = plane.canvasX(p);
         double cy = plane.canvasY(p);
         if (music.hitButton(cx, cy)) {
+            noteMusicHit(music, "播放键", cx, cy);
             return new double[]{-1.0};            // 播放键 → 启停
         }
         double fraction = music.seekFractionAt(cx, cy);
         if (fraction >= 0) {
+            noteMusicHit(music, "波形条", cx, cy);
             return new double[]{fraction};        // 波形条 → 调进度
         }
+        // 【27.2.1-hotfix-144】点在音乐控件上、但没点中播放键或波形条 ⇒ 什么都不做。
+        // 玩家报的「有概率播放键失灵」必须能判出来是这一种，所以留一行限流日志（含命中框）。
+        noteMusicHit(music, "控件空白处（无操作）", cx, cy);
         return null;
+    }
+
+    /** 音乐控件交互的判定留痕（同一控件 1 秒最多一行；只用来定位「播放键失灵」）。 */
+    private static final java.util.Map<java.util.UUID, Long> LAST_MUSIC_HIT_MS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void noteMusicHit(top.hmjmfabc.projector.common.widget.MusicWidget music,
+                                     String what, double cx, double cy) {
+        long now = System.currentTimeMillis();
+        Long last = LAST_MUSIC_HIT_MS.get(music.id);
+        if (last != null && now - last < 1000L) {
+            return;
+        }
+        LAST_MUSIC_HIT_MS.put(music.id, now);
+        double[] l = music.toLocal(cx, cy);
+        double[] b = music.buttonBox();
+        top.hmjmfabc.projector.Projector.LOGGER.info(
+                "[Projector][音乐] 点到了{}：画布=({}, {}) 局部=({}, {}) 播放键框=({}, {})-({}, {})",
+                what, Math.round(cx), Math.round(cy),
+                String.format(java.util.Locale.ROOT, "%.1f", l[0]),
+                String.format(java.util.Locale.ROOT, "%.1f", l[1]),
+                String.format(java.util.Locale.ROOT, "%.1f", b[0]),
+                String.format(java.util.Locale.ROOT, "%.1f", b[1]),
+                String.format(java.util.Locale.ROOT, "%.1f", b[2]),
+                String.format(java.util.Locale.ROOT, "%.1f", b[3]));
     }
 
     /** 在单个平面上做控件拾取。 */

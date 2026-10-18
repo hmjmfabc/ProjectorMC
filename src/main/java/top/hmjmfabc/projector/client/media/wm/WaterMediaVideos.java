@@ -60,13 +60,11 @@ public final class WaterMediaVideos {
         if (w.waterMediaForced()) {
             return true;
         }
-        if (w.builtinForced()) {
-            return false;
-        }
-        // 自动：常见的本地视频格式（mp4/webm/mkv…）只有 WaterMedia 放得了；
-        // mjpg/zip 是我们自己的格式，内置后端更省事（不用惊动别的模组）。
+        // 【27.2.4-201】内置后端（MJPEG / ZIP 帧序列）已随 Build 112 的内置解码器一起下线，
+        // 所以这里**不再有「改用内置后端」这条路**：能放就交给 WaterMedia，
+        // 放不了（mjpg/zip 等）就由渲染层画「格式不支持」占位。
         // 【27.1.3】在线源：文件名从 OnlineVideos 一个入口问（解析完扩展名才是准的）
-        // 【27.1.3】无限流（直播/HLS）只能交给它拉流 —— 我们的内置后端只吃本地 MJPEG/ZIP
+        // 【27.1.3】无限流（直播/HLS）只能交给它拉流
         if (top.hmjmfabc.projector.client.media.net.OnlineVideos.streaming(w)) {
             return true;
         }
@@ -86,6 +84,11 @@ public final class WaterMediaVideos {
             return null;
         }
         Entry entry = SESSIONS.computeIfAbsent(w.id, id -> new Entry());
+        // 【27.2.4-201】顺手记下「这个会话在播哪份素材」：CacheCleaner 的白名单要用
+        String playingHash = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaId(w);
+        if (!playingHash.isEmpty()) {
+            SESSION_HASHES.put(w.id.toString(), playingHash);
+        }
         WaterMediaBridge.Session session = entry.session;
         if (session == null) {
             if (!entry.loading && entry.failures < MAX_FAILURES) {
@@ -130,7 +133,7 @@ public final class WaterMediaVideos {
             }
             long pos = session.timeMs();
             if (pos >= 0) {
-                w.mediaPositionMs = pos;
+                w.noteMediaPosition(pos);      // 顺手盖时间戳：位置只在「新鲜」时才算数
             }
         } catch (Throwable ignored) {
             // 读不到就退回时间锚点，不影响播放
@@ -296,6 +299,9 @@ public final class WaterMediaVideos {
 
     /** 控件被删除 / 换素材时释放会话。 */
     public static void release(UUID widgetId) {
+        if (widgetId != null) {
+            SESSION_HASHES.remove(widgetId.toString());
+        }
         Entry entry = SESSIONS.remove(widgetId);
         DISABLED.remove(widgetId);
         if (entry != null && entry.session != null) {
@@ -312,7 +318,36 @@ public final class WaterMediaVideos {
         }
         SESSIONS.clear();
         DISABLED.clear();
+        SESSION_HASHES.clear();
     }
+
+    /**
+     * 【27.2.4-201】正在播的素材哈希（{@link MediaCache#inUseHashes()} 的白名单来源）。
+     *
+     * <p>Purpose：{@link top.hmjmfabc.projector.client.media.CacheCleaner} 清磁盘缓存时
+     * 不能删掉正在播的那份文件 —— 删了会在播放中途读不到数据。
+     * 以前这份名单由 {@code MediaCache.VIDEO_SOURCES}（内置解码器的打开文件表）提供，
+     * 内置解码器下线后改成问正在播的 WaterMedia 会话。</p>
+     */
+    public static Set<String> inUseHashes() {
+        Set<String> hashes = new java.util.HashSet<>();
+        for (Map.Entry<UUID, Entry> e : SESSIONS.entrySet()) {
+            Entry entry = e.getValue();
+            if (entry == null || entry.session == null) {
+                continue;                       // 还没打开会话的控件不算「正在用」
+            }
+            // 会话表按**控件 UUID** 归键，而 CacheCleaner 要的是**素材哈希**：
+            // 渲染路径顺手登记过「控件 → 哈希」，这里只做映射（不碰文件系统）。
+            String hash = SESSION_HASHES.get(e.getKey().toString());
+            if (hash != null && !hash.isEmpty()) {
+                hashes.add(hash);
+            }
+        }
+        return hashes;
+    }
+
+    /** 控件 UUID → 素材哈希（渲染路径顺手登记，见 {@link #textureFor}）。 */
+    private static final Map<String, String> SESSION_HASHES = new ConcurrentHashMap<>();
 
     /** 已经在用 WaterMedia 的控件数（诊断用）。 */
     public static int activeCount() {

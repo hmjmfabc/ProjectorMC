@@ -48,7 +48,12 @@ public final class MusicAudioStream implements AudioStream {
      */
     private static final int PREFILL_CHUNKS = 5;
     /** 播放途中队列暂时空了时，最多等这么久再返回 null（避免一次抖动就断流）。 */
-    private static final long READ_WAIT_MS = 60L;
+    /**
+     * 【27.2.4-200】原先 60 ms。这个 await 发生在**声音引擎线程**（{@code Channel.pumpBuffers}）上，
+     * 一次声音 tick 可能连续要 4 个缓冲 ⇒ 最坏拖住 240 ms，**整个游戏的声音**都跟着卡。
+     * 压到 2 ms：够吃掉同一 tick 内的抖动，又不会影响其它声道。
+     */
+    private static final long READ_WAIT_MS = 2L;
 
     private final AudioInputStream pcm;
     private final AudioFormat format;
@@ -63,6 +68,9 @@ public final class MusicAudioStream implements AudioStream {
     private final ArrayDeque<ByteBuffer> pool = new ArrayDeque<>();
     private final Object lock = new Object();
     private Thread pump;
+
+    /** 解码线程待丢弃的字节数（流内快进用；{@code seekForwardTo} 只负责写下它）。 */
+    private volatile long pendingSkipBytes;
 
     private boolean closed;
     private boolean eof;
@@ -159,6 +167,16 @@ public final class MusicAudioStream implements AudioStream {
                 return;
             }
             try {
+                // 【27.2.4-200】流内快进：由本线程真的去丢字节（见 seekForwardTo 的注释）
+                long skip = pendingSkipBytes;
+                if (skip > 0L) {
+                    pendingSkipBytes = 0L;
+                    if (!skipBytesOnPump(skip)) {
+                        eof = true;
+                        return;
+                    }
+                    continue;
+                }
                 if (!readChunk(0L)) {
                     eof = true;
                 }
@@ -322,6 +340,99 @@ public final class MusicAudioStream implements AudioStream {
             return cached;
         }
         return ByteBuffer.allocateDirect(Math.max(capacity, chunkBytes));
+    }
+
+    // ---------------------------------------------------------------- 流内快进（不重开流）
+
+    /**
+     * 【27.2.3-hotfix-142】把**已经打开的这条流**快进到 {@code targetMs}，不重新联网、不重建解码器。
+     *
+     * <h2>为什么要有它（用户实测：拖进度条/暂停继续要卡好几秒）</h2>
+     * 以前每一次跳进度都是 {@code MusicPlayer.play(...)} ⇒ 一整段重开：
+     * ①网易云的播放地址要重新解析（一次 HTTPS）；②重新建连接（{@code ChunkedAudioStream}）；
+     * ③新的解码器 + 新的预填（{@code prefill} 要等 1 秒分片）——
+     * 三样加起来就是玩家感觉到的「卡好几秒」。而**参考实现（网络音乐机）是流内定位**，
+     * 也就是这里做的这件事：接着往下解，把不要的样本丢掉。
+     *
+     * <h2>为什么只支持「往前」</h2>
+     * 底层是 HTTP Range 顺序流：往前跳只是「多解一会儿再丢」，几乎瞬时的；
+     * 往回跳则必须重新建连接（服务端不会倒着发），那种情况调用方仍然走重开流。
+     * 所以这里返回 {@code false} 让调用方回退，语义是「这次快进没做成，你去重开吧」。
+     *
+     * <p>线程：由客户端（游戏线程）调用；数据只在 {@code lock} 里动，与解码线程互斥。</p>
+     *
+     * @param targetMs 目标位置（毫秒，相对歌曲开头）
+     * @return true = 已在本流内定位；false = 做不到（已关闭 / 目标在后 / 差的太远 / 出错了）
+     */
+    public boolean seekForwardTo(long targetMs) {
+        synchronized (lock) {
+            if (closed || eof) return false;
+            long nowMs = decodedBytes * 1000L / bytesPerSecond;
+            if (targetMs <= nowMs) return false;              // 往后跳：交给调用方重开流
+            long skipBytes = targetMs * bytesPerSecond / 1000L - decodedBytes;
+            skipBytes -= skipBytes % frameSize;
+            if (skipBytes <= 0) return false;
+
+            // 丢掉队列里的旧数据：它们已经在目标位置之前了。
+            // ⚠ 不能走 recycle()（那个会动 queuedBytes 的账），这里手动归还缓冲，
+            //   并把 queuedBytes 明确置 0 —— 否则账目错位 ⇒ 后续「还能塞多少」算错，
+            //   轻则卡顿重则永远读不到数据。
+            while (!queue.isEmpty()) {
+                ByteBuffer old = queue.pollFirst();
+                if (pool.size() < 8) {
+                    old.clear();
+                    pool.addLast(old);
+                }
+            }
+            queuedBytes = 0;
+
+            // 【27.2.4-200 修】**绝不能拿着 lock 做 pcm.read**：那是网络读，可能几十秒，
+            // 而 read(int)（声音引擎线程）要同一把锁 ⇒ 一次拖动会卡住渲染线程 + 全游戏声音。
+            // 现在只把「要丢多少字节」记下来、叫醒解码线程，本方法立即返回。
+            pendingSkipBytes = skipBytes;
+            lock.notifyAll();
+            return true;
+        }
+    }
+
+    /**
+     * 【27.2.4-200】在**解码线程**上丢弃 {@code toSkip} 字节（流内快进）。
+     *
+     * <p>全程在 pump 线程上分片读，**不持锁**，所以声音引擎线程照常取数据；
+     * 期间照常把振幅填进波形，保证波形与音频位置一致。</p>
+     *
+     * @return true = 丢够了；false = 读失败或已到结尾
+     */
+    private boolean skipBytesOnPump(long toSkip) {
+        byte[] scratch = null;
+        long remaining = toSkip;
+        while (remaining > 0L && !closed) {
+            int want = (int) Math.min(remaining, 1 << 16);
+            if (scratch == null || scratch.length < want) {
+                scratch = new byte[want];
+            }
+            int n;
+            try {
+                n = pcm.read(scratch, 0, want);
+            } catch (Exception e) {
+                this.failure = e;
+                return false;
+            }
+            if (n <= 0) {
+                return false;                                 // 到结尾了
+            }
+            int usable = n - (n % frameSize);
+            if (usable <= 0) {
+                continue;
+            }
+            long atMs = decodedBytes * 1000L / bytesPerSecond;
+            envelope.put(atMs, amplitude(scratch, usable, frameSize));
+            decodedBytes += usable;
+            remaining -= usable;
+        }
+        Projector.LOGGER.info("[Projector][音乐] 流内快进完成：解码到 {}ms（没有重开流，{}）",
+                decodedBytes * 1000L / bytesPerSecond, label);
+        return remaining <= 0L;
     }
 
     // ---------------------------------------------------------------- 状态

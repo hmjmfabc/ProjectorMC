@@ -155,9 +155,10 @@ public final class WorldPlaneRenderer {
         boolean throughWall = PlaneSide.seeThroughFromBack(backside, distance, range);
         reportBackface(plane, backside, distance, range, throughWall);
         try {
-            // 反面要同时做两件事，缺一个都看不到：
-            //   ① 翻绕序（RenderType.text 默认 CULL，背面朝外会被整批剔除）；
-            //   ② 贴着平面时关掉深度测试（否则方块本体挡在相机与内容之间）。
+            // 反面要翻绕序（RenderType.text 默认 CULL，背面朝外会被整批剔除）；
+            // 【27.2.2-160】**默认不再关深度测试**（用户口径）：
+            //   不透明墙 1 格厚也挡得住控件；玻璃是半透明批次、在我们之后画 ⇒ 透过去看得见。
+            //   只有把 render.backfaceSeeThroughRange 调 > 0 时才走老的「透墙」旁路。
             // 几何位置一个像素都不动 —— 「正面在哪背面就显示在哪」。
             QuadCollector.setBackfaceView(backside);
             QuadCollector.setSeeThrough(throughWall);
@@ -204,8 +205,11 @@ public final class WorldPlaneRenderer {
         // 只在「内容变化」或「真的异常」时打印，并且**同一个平面每 1.2 秒最多一行**。
         StringBuilder detail = new StringBuilder();
         boolean zeroWhileVisible = false;
+        // 【27.2.4-200】贴面深度索引：每帧按平面建一次，别再让每个控件都全量扫一遍方块面
+        // （128 控件 × 1024 方块 = 13 万次/帧/平面，全在渲染线程）。
+        final java.util.Map<Long, Double> depthIndex = buildDepthIndex(plane);
         for (Widget w : plane.widgets) {
-            double surface = surfaceDepthOf(plane, w);
+            double surface = surfaceDepthOf(depthIndex, w);
             // 深度 = 面平面偏移 + 方块表面位移 + 基础贴面偏移 + 控件分层
             // 内容沿法线的偏移（在正面那一侧）
             double frontDepth = surface + PlaneRenderContext.surfaceBias()
@@ -381,6 +385,48 @@ public final class WorldPlaneRenderer {
     }
 
     /** 控件覆盖范围内方块的最大表面位移（画布单位 -> 方块单位）。 */
+    /** 【27.2.4-200】「格子(col,row) → 该格最大 depth」索引；每帧每平面建一次。 */
+    private static java.util.Map<Long, Double> buildDepthIndex(Plane plane) {
+        if (plane.blocks.isEmpty()) {
+            return java.util.Collections.emptyMap();
+        }
+        java.util.Map<Long, Double> idx = new java.util.HashMap<>(plane.blocks.size() * 2);
+        for (PlaneBlock b : plane.blocks.values()) {
+            long key = ((long) b.col() << 32) ^ (b.row() & 0xffffffffL);
+            Double old = idx.get(key);
+            if (old == null || b.depth > old) {
+                idx.put(key, b.depth);
+            }
+        }
+        return idx;
+    }
+
+    /** 索引版：{@link #surfaceDepthOf(Plane, Widget)} 的等价实现，但不再全量扫方块。 */
+    static double surfaceDepthOf(java.util.Map<Long, Double> index, Widget w) {
+        int c0 = (int) Math.floor(w.minX() / PlaneCanvas.UNITS_PER_BLOCK);
+        int c1 = (int) Math.floor((w.maxX() - 1.0e-3) / PlaneCanvas.UNITS_PER_BLOCK);
+        int r0 = (int) Math.floor(w.minY() / PlaneCanvas.UNITS_PER_BLOCK);
+        int r1 = (int) Math.floor((w.maxY() - 1.0e-3) / PlaneCanvas.UNITS_PER_BLOCK);
+        double best = -Double.MAX_VALUE;
+        boolean found = false;
+        for (int c = c0; c <= c1; c++) {
+            for (int r = r0; r <= r1; r++) {
+                Double d = index.get(((long) c << 32) ^ (r & 0xffffffffL));
+                if (d == null) {
+                    continue;
+                }
+                found = true;
+                if (d > best) {
+                    best = d;
+                }
+            }
+        }
+        if (!found) {
+            return 0.0;
+        }
+        return best;
+    }
+
     public static double surfaceDepthOf(Plane plane, Widget w) {
         int c0 = (int) Math.floor(w.minX() / PlaneCanvas.UNITS_PER_BLOCK);
         int c1 = (int) Math.floor((w.maxX() - 1.0e-3) / PlaneCanvas.UNITS_PER_BLOCK);

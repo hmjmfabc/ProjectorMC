@@ -75,14 +75,10 @@ public final class ServerEvents {
 
         // 正常的方块破坏：把该方块从平面结构中移除，避免平面数据与世界长期不一致
         boolean changed = false;
-        boolean structural = false;
         for (Plane plane : planes) {
             if (plane.blocks.remove(event.getPos().asLong()) != null) {
                 changed = true;
                 data.markDirty();
-                if (plane.widgets.isEmpty() || plane.blocks.isEmpty()) {
-                    structural = true;
-                }
             }
         }
         if (changed) {
@@ -137,6 +133,25 @@ public final class ServerEvents {
     public void onServerTick(net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) {
         // 【rc-81】每个刻结算被合并掉的平面广播（同一平面 100ms 最多真发一次）
         ServerNetHandler.flushPendingBroadcasts();
+        // 【27.2.2】流程播放：每刻查一次（最后一个片段播完就停 / 循环则从头再来）。
+        // 为什么是「每刻」而不是像下面那样 0.5 秒：循环重播要在末尾**当刻**接上，
+        // 差 0.5 秒就是肉眼可见的停顿；而每刻的开销只是一次「有没有在播的流程」判定。
+        try {
+            ServerNetHandler.tickSequences(event.getServer());
+        } catch (Throwable t) {
+            Projector.LOGGER.warn("[Projector] 流程扫描异常：{}", t.toString());
+        }
+        // 【27.2.2】播放列表自动续播：每 10 刻（0.5 秒）扫一次。
+        // 为什么不放在上面那个「每秒」块里：一首歌放完到下一首开播之间如果隔 1 秒，
+        // 听感上就是「卡了一下」；0.5 秒基本察觉不到，而扫描本身只是遍历控件列表。
+        if (event.getServer().getTickCount() % 10 == 0) {
+            try {
+                ServerNetHandler.tickPlaylists(event.getServer());
+            } catch (Throwable t) {
+                // 播放列表出错绝不能拖垮服务端主循环
+                Projector.LOGGER.warn("[Projector] 播放列表扫描异常：{}", t.toString());
+            }
+        }
         if (event.getServer().getTickCount() % 20 == 0) {
             ServerNetHandler.sweepExpiredUploads();
             // 【hotfix-101】按距离订阅：新进圈的平面补发、走出去的发移除
@@ -181,7 +196,12 @@ public final class ServerEvents {
                     if (hit == null) continue;
                     Plane fresh = Plane.build(level, plane.dimension, hit,
                             top.hmjmfabc.projector.ProjectorConfig.INSTANCE.maxPlaneBlocks.get());
-                    plane.applyFrom(fresh);
+                    // 【161 修】原来这里是 applyFrom(fresh)：applyFrom 的第一道闸门是
+                    // 「id 必须相同」，而 Plane.build 给的是**新 id** ⇒ 直接 return、
+                    // 一个字段都没搬过来，但下面照样清掉 needsRebuild 并打印
+                    // 「已自动重建 N 个旧版平面」⇒ 旧存档的轴向偏移**从来没被真正修过**，
+                    // 而且还丢掉了"以后再修一次"的机会。只搬几何、保留内容才对。
+                    plane.adoptGeometryFrom(fresh);
                     plane.needsRebuild = false;
                     migrated++;
                 } catch (Throwable t) {

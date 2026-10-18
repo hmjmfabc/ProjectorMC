@@ -3,6 +3,7 @@ package top.hmjmfabc.projector.common.widget;
 import net.minecraft.nbt.CompoundTag;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 音乐控件（27.1.1 新增，第 10 种控件类型）。
@@ -71,6 +72,197 @@ public class MusicWidget extends Widget {
     /** 竖线条数（0 = 按宽度自动）。 */
     public int barCount = 0;
 
+    // ------------------------------------------------------------------ 播放列表（27.2.2）
+
+    /** 播放模式：顺序播放，列表放完就停。 */
+    public static final int MODE_SEQUENCE = 0;
+    /** 播放模式：列表循环。 */
+    public static final int MODE_LOOP = 1;
+    /** 播放模式：单曲循环。 */
+    public static final int MODE_REPEAT_ONE = 2;
+    /** 播放模式：随机（不重复当前这首）。 */
+    public static final int MODE_SHUFFLE = 3;
+    /** 模式名字（界面按钮直接用，长度必须与上面四个常量对应）。 */
+    public static final String[] MODE_NAMES = {
+            "\u987a\u5e8f", "\u5217\u8868\u5faa\u73af", "\u5355\u66f2\u5faa\u73af", "\u968f\u673a"};
+
+    /** 播放列表里的一首歌（都是基本类型，本类在 common/ 里不能引用客户端的 MusicTrack）。 */
+    public record Entry(String kind, String key, String title, String artist, long durationMs) {
+
+        /** 列表里显示的一行字。 */
+        public String display() {
+            String t = title == null || title.isBlank() ? key : title;
+            if (t == null || t.isBlank()) {
+                t = "\uff08\u672a\u77e5\u6b4c\u66f2\uff09";
+            }
+            return artist == null || artist.isBlank() ? t : t + " - " + artist;
+        }
+    }
+
+    /**
+     * 播放列表：**顺序就是播放顺序**。
+     *
+     * <p>存 {@link CompoundTag} 而不是引用 {@code MusicTrack}，理由同上面的
+     * {@code sourceKind}：本类会被专用服务端加载，只能碰 NBT 与基本类型。</p>
+     */
+    public final List<CompoundTag> playlist = new java.util.ArrayList<>();
+    /** 播放模式（{@link #MODE_SEQUENCE} 等）。 */
+    public int playMode = MODE_SEQUENCE;
+    /** 现在播的是列表里第几首（-1 = 不在列表里，例如手动单选的歌）。 */
+    public int playlistIndex = -1;
+
+    public int playlistSize() {
+        return playlist.size();
+    }
+
+    /** 读第 i 首（越界返回 null）。 */
+    public Entry playlistAt(int i) {
+        if (i < 0 || i >= playlist.size()) {
+            return null;
+        }
+        CompoundTag t = playlist.get(i);
+        if (t == null) {
+            return null;
+        }
+        return new Entry(t.getString("kind"), t.getString("key"), t.getString("title"),
+                t.getString("artist"), t.getLong("dur"));
+    }
+
+    /** 全部读出来（界面用；条目本身仍是基本类型）。 */
+    public List<Entry> playlistEntries() {
+        List<Entry> out = new java.util.ArrayList<>(playlist.size());
+        for (int i = 0; i < playlist.size(); i++) {
+            Entry e = playlistAt(i);
+            if (e != null && e.key() != null && !e.key().isBlank()) {
+                out.add(e);
+            }
+        }
+        return out;
+    }
+
+    private static CompoundTag tagOf(String kind, String key, String title, String artist, long dur) {
+        CompoundTag t = new CompoundTag();
+        t.putString("kind", kind == null || kind.isBlank() ? "LOCAL" : kind);
+        t.putString("key", key == null ? "" : key);
+        t.putString("title", title == null ? "" : title);
+        t.putString("artist", artist == null ? "" : artist);
+        t.putLong("dur", Math.max(0L, dur));
+        return t;
+    }
+
+    /** 追加一首（返回加进去之后的下标）。 */
+    public int addToPlaylist(String kind, String key, String title, String artist, long dur) {
+        if (key == null || key.isBlank()) {
+            return -1;
+        }
+        playlist.add(tagOf(kind, key, title, artist, dur));
+        return playlist.size() - 1;
+    }
+
+    /** 追加一首（重复的歌允许存在 —— 播放列表本来就允许同一首放两遍）。 */
+    public int addToPlaylist(Entry e) {
+        return e == null ? -1 : addToPlaylist(e.kind(), e.key(), e.title(), e.artist(), e.durationMs());
+    }
+
+    /** 移掉第 i 首（同时修正 {@link #playlistIndex}）。 */
+    public void removeFromPlaylist(int i) {
+        if (i < 0 || i >= playlist.size()) {
+            return;
+        }
+        playlist.remove(i);
+        if (playlistIndex == i) {
+            playlistIndex = -1;
+        } else if (playlistIndex > i) {
+            playlistIndex--;
+        }
+    }
+
+    /** 把第 from 首挪到 to（界面上的「上移 / 下移」）。 */
+    public void moveInPlaylist(int from, int to) {
+        if (from < 0 || from >= playlist.size() || to < 0 || to >= playlist.size() || from == to) {
+            return;
+        }
+        CompoundTag t = playlist.remove(from);
+        playlist.add(to, t);
+        if (playlistIndex == from) {
+            playlistIndex = to;
+        } else if (from < playlistIndex && to >= playlistIndex) {
+            playlistIndex--;
+        } else if (from > playlistIndex && to <= playlistIndex) {
+            playlistIndex++;
+        }
+    }
+
+    public void clearPlaylist() {
+        playlist.clear();
+        playlistIndex = -1;
+    }
+
+    /** 这首（kind+key）在列表里的下标，找不到返回 -1。 */
+    public int indexOfTrack(String kind, String key) {
+        if (key == null || key.isBlank()) {
+            return -1;
+        }
+        for (int i = 0; i < playlist.size(); i++) {
+            Entry e = playlistAt(i);
+            if (e != null && key.equals(e.key())
+                    && (kind == null || e.kind() == null
+                        || kind.equalsIgnoreCase(e.kind()))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 下一首该放第几首 —— <b>纯函数，脚本可逐场景验证</b>。
+     *
+     * @param current 当前下标（-1 = 当前这首不在列表里）
+     * @param manual  true = 玩家手动点「下一首」（单曲循环下也要换歌；顺序模式下回到第一首）
+     * @param rnd     随机源（{@code null} 时退化成顺序模式），只用于 {@link #MODE_SHUFFLE}
+     * @return 下一首的下标；{@code -1} = 不该继续（顺序播放到底了）
+     */
+    public int nextPlaylistIndex(int current, boolean manual, java.util.Random rnd) {
+        int n = playlist.size();
+        if (n == 0) {
+            return -1;
+        }
+        if (n == 1) {
+            // 只有一首：自动播完时只有「单曲循环 / 列表循环 / 随机」继续；顺序模式停下
+            return manual || playMode != MODE_SEQUENCE ? 0 : -1;
+        }
+        return switch (playMode) {
+            // 单曲循环：自动到底就重放这一首；玩家手动点下一首仍然换歌
+            case MODE_REPEAT_ONE -> manual ? (current + 1) % n : Math.max(0, current);
+            // 随机：从「除当前这首以外」的 n-1 首里等概率取一首
+            case MODE_SHUFFLE -> {
+                int k = rnd == null ? 0 : rnd.nextInt(n - 1);
+                yield k >= current ? k + 1 : k;
+            }
+            // 列表循环
+            case MODE_LOOP -> Math.floorMod(current + 1, n);
+            // 顺序：到底就停（手动点下一首则回到第一首，方便循环试听）
+            default -> {
+                int nxt = current + 1;
+                yield nxt < n ? nxt : (manual ? 0 : -1);
+            }
+        };
+    }
+
+    /** 列表里第一首的下标（空列表 = -1）；播放列表整体开播时用。 */
+    public int firstPlaylistIndex() {
+        return playlist.isEmpty() ? -1 : 0;
+    }
+
+    /** 界面/诊断用的一句话（「3 首 · 列表循环」）。 */
+    public String describePlaylist() {
+        if (playlist.isEmpty()) {
+            return "\u65e0\u64ad\u653e\u5217\u8868";
+        }
+        return playlist.size() + " \u9996 \u00b7 " + MODE_NAMES[Math.floorMod(playMode, MODE_NAMES.length)]
+                + (playlistIndex >= 0 ? "\uff08\u7b2c " + (playlistIndex + 1) + " \u9996\uff09" : "");
+    }
+
     @Override
     public int kind() {
         return KIND_MUSIC;
@@ -107,6 +299,14 @@ public class MusicWidget extends Widget {
         t.putInt("wave", waveColor);
         t.putBoolean("lyric", showLyric);
         t.putInt("bars", barCount);
+        // 【27.2.2】播放列表：一首一个子标签，**顺序就是播放顺序**
+        net.minecraft.nbt.ListTag list = new net.minecraft.nbt.ListTag();
+        for (CompoundTag e : playlist) {
+            list.add(e == null ? new CompoundTag() : e);
+        }
+        t.put("list", list);
+        t.putInt("playMode", playMode);
+        t.putInt("plIndex", playlistIndex);
     }
 
     @Override
@@ -130,6 +330,33 @@ public class MusicWidget extends Widget {
         waveColor = t.contains("wave") ? t.getInt("wave") : 0xFF5A6472;
         showLyric = !t.contains("lyric") || t.getBoolean("lyric");
         barCount = t.getInt("bars");
+        // 【27.2.2】播放列表（旧存档没有这几个键 ⇒ 空列表 + 顺序模式，行为与以前一致）
+        // 【27.2.4-200 修】以前这里完全不设限：改过的客户端可以提交任意大的播放列表，
+        // 而 updateWidget 会把它原样存进存档、并随**整个平面**一起广播给范围内每个人。
+        // 现在条目数与每条字符串都有硬上限（超出丢尾部并留一行日志）。
+        final int MAX_PLAYLIST = 200;
+        final int MAX_KEY = 512, MAX_TEXT = 256;
+        playlist.clear();
+        net.minecraft.nbt.ListTag list = t.getList("list", net.minecraft.nbt.Tag.TAG_COMPOUND);
+        int keep = Math.min(list.size(), MAX_PLAYLIST);
+        for (int i = 0; i < keep; i++) {
+            net.minecraft.nbt.CompoundTag e = list.getCompound(i).copy();
+            e.putString("key", cutTo(e.getString("key"), MAX_KEY));
+            e.putString("title", cutTo(e.getString("title"), MAX_TEXT));
+            e.putString("artist", cutTo(e.getString("artist"), MAX_TEXT));
+            playlist.add(e);
+        }
+        if (list.size() > keep) {
+            top.hmjmfabc.projector.Projector.LOGGER.warn(
+                    "[Projector][音乐] 播放列表超过 {} 首，多出的 {} 首已丢弃（控件 {}）",
+                    MAX_PLAYLIST, list.size() - keep, id);
+        }
+        playMode = t.contains("playMode")
+                ? Math.floorMod(t.getInt("playMode"), MODE_NAMES.length) : MODE_SEQUENCE;
+        playlistIndex = t.contains("plIndex") ? t.getInt("plIndex") : -1;
+        if (playlistIndex >= playlist.size()) {
+            playlistIndex = -1;
+        }
     }
 
     // ------------------------------------------------------------------ 歌曲
@@ -158,6 +385,12 @@ public class MusicWidget extends Widget {
         return (t == null ? "" : t) + (artist == null || artist.isBlank() ? "" : " - " + artist);
     }
 
+    /** 截断到 {@code max} 个字符（null 当空串）。 */
+    private static String cutTo(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
     public boolean hasTrack() {
         return sourceKey != null && !sourceKey.isBlank();
     }
@@ -169,8 +402,46 @@ public class MusicWidget extends Widget {
         return durationMs > 0 ? durationMs : 180_000L;
     }
 
+    /**
+     * 【27.2.3-hotfix-142】正在「重新加载这一段」的控件（跳进度 / 暂停后引擎回收了声道）。
+     * <p>存的是**要停在哪个位置**（毫秒）。加载期间控件的进度显示一律钉在这个值上 ——
+     * 用户要求：跳进度本来就要等，那等待期间进度条不要自己往前跑
+     * （以前按游戏刻推算，进度条一边等一边动，看起来像「声音和条子对不上」）。</p>
+     * <p>只在客户端用（服务端权威数据里没有这个概念，也不必同步：
+     * 别人看到的进度仍然由 {@code startedGameTime} 推算，与加载各不相干）。</p>
+     */
+    private static final java.util.Map<UUID, Long> BUFFERING_AT = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 【27.2.4-200】把已经不存在的控件的冻结条目清掉（由 MusicManager 的缓存回收调用）。 */
+    public static void retainBuffering(java.util.Collection<UUID> alive) {
+        if (alive == null) {
+            return;
+        }
+        BUFFERING_AT.keySet().retainAll(alive);
+    }
+
+    /** 标记「这个控件正在加载，进度显示停在 atMs」。 */
+    public void markBuffering(long atMs) {
+        BUFFERING_AT.put(this.id, Math.max(0L, atMs));
+    }
+
+    /** 加载结束（真的开始出声了）：进度恢复按时间推进。 */
+    public void clearBuffering() {
+        BUFFERING_AT.remove(this.id);
+    }
+
+    /** 现在是不是在加载中（只影响显示）。 */
+    public boolean isBuffering() {
+        return BUFFERING_AT.containsKey(this.id);
+    }
+
     /** 当前播放位置（毫秒）。 */
     public long positionAt(long gameTime) {
+        // 【加载中】进度钉住不动（见 BUFFERING_AT 的说明）
+        Long frozen = BUFFERING_AT.get(this.id);
+        if (frozen != null) {
+            return Math.max(0L, Math.min(effectiveDurationMs(), frozen));
+        }
         long pos = Math.max(0L, positionMs);
         if (playing && gameTime >= startedGameTime) {
             pos += (gameTime - startedGameTime) * 50L;

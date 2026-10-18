@@ -133,6 +133,9 @@ public final class WidgetRenderer {
             // 画法与视频分支同源（同一份 canvasQuad / 同一个 RenderType.text）。
             case Widget.KIND_WEB -> WebWidgetRenderer.draw(collector, plane, ctx,
                     (top.hmjmfabc.projector.common.widget.WebWidget) w);
+            // 【27.2.2】展示框：轮廓 + 物品贴图（右键放入 / 左键取出）
+            case Widget.KIND_ITEM -> ItemWidgetRenderer.draw(collector, ctx,
+                    (top.hmjmfabc.projector.common.widget.ItemWidget) w);
             default -> {
             }
         }
@@ -146,14 +149,14 @@ public final class WidgetRenderer {
         // 【27.2-pre-136 修复】底色必须**先画**：以前它排在文字后面，两者又在同一深度，
         // 于是「设了底色的文本控件」会被底色整个盖住 —— 玩家只会看到一块纯色。
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         TtfFont font = FontManager.get(w.fontId);
         // 【27.2-pre-136】「打字」动画：只画出「已经打出来的那部分」。
         // 时钟与流程动画用的是同一个 gameTime，所以编辑器里也能看到它在打。
         String shown = typedPrefix(w);
         TextRenderer.drawInBox(collector, ctx, font, shown, w.fontSize, w.wrapWidth, w.lineSpacing,
-                w.align, 1, w.x, w.y, w.w, w.h, w.rot, w.alpha, ctx.depth());
+                w.align, 1, w.x, w.y, w.w, w.h, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
     }
 
     /**
@@ -182,7 +185,7 @@ public final class WidgetRenderer {
     private static void drawImage(QuadCollector collector, PlaneRenderContext ctx, ImageWidget w) {
         if (degenerate(w)) return;
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         if (w.mediaId == null || w.mediaId.isEmpty()) {
             placeholder(collector, ctx, w, 0x663377CC);
@@ -200,10 +203,10 @@ public final class WidgetRenderer {
         reportImage(w, "就绪", entry.width, entry.height);
         collector.setRenderType(QuadCollector.imageType(entry.location));
         int tint = QuadCollector.withAlpha(w.tint, w.alpha);
-        double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, 0, 0);
-        double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, w.w, 0);
-        double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, w.w, w.h);
-        double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, 0, w.h);
+        double[] p0 = w.rotPt(0, 0);
+        double[] p1 = w.rotPt(w.w, 0);
+        double[] p2 = w.rotPt(w.w, w.h);
+        double[] p3 = w.rotPt(0, w.h);
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
                 ctx.depth(), (float) w.u0, (float) w.v0, (float) w.u1, (float) w.v1, tint);
@@ -258,14 +261,17 @@ public final class WidgetRenderer {
             placeholder(collector, ctx, w, 0x663377CC);
             return;
         }
-        // 【27.1.3】按需加载：**点过播放才下载**（用户要求：所有视频统一这条规则）。
-        // 门只挡「要联网下载」的那一步：本地已经有这份素材（自己上传的视频/图片、
-        // 或在线源已经下完）就照旧直接显示，不需要先点一下。
         final boolean online = top.hmjmfabc.projector.client.media.net.OnlineVideos.online(w);
         final boolean localReady = online
                 ? top.hmjmfabc.projector.client.media.net.OnlineVideoCache.ready(w.sourceUrl)
                 : MediaCache.isLocallyAvailable(mediaId);
-        if (!localReady
+        // 【27.1.3】按需加载：**点过播放才下载**（用户要求）。
+        // 【27.2.1-hotfix-144 按用户反馈修正】这道门**只挡「要联网下载」那一步**：
+        //   在线源（B 站等）现在**自动解析**，不必等玩家点一下 —— 解析只是几次 HTTP 请求，
+        //   不占磁盘也不烧流量；玩家报的「B 站视频不会自己解析，必须手动点一下编辑」就是这条门
+        //   把解析也一起挡住了（点播放/进编辑器都会调 VideoControls.request ⇒ 手动点一下才通）。
+        //   **本地**素材（要整段下载/上传的那类）仍然守「点过播放才下载」。
+        if (!localReady && !online
                 && !top.hmjmfabc.projector.client.media.VideoControls.requested(w)) {
             // 灰蓝占位 = 「还没加载」（与紫色「下载中」、橙色「内置加载中」、绿色「外部解码器」区分开）
             loadingPlaceholder(collector, ctx, w, mediaId, 0, 0x66808A96);
@@ -295,17 +301,40 @@ public final class WidgetRenderer {
             // 注：占位色偏绿，和内置后端的橙色占位区分开（一眼看出在用哪个后端）
             return;
         }
-        long now = clientTimeMs();
-        int frame = w.currentFrame(now);
-        reportVideo(w, frame);
-        MediaCache.Frame f = MediaCache.videoFrame(mediaId, frame);
-        if (f == null || !QuadCollector.textureReady(f.location)) {
-            // 【⑫】整段视频的下载进度用 frame=0 的会话；帧下载用当前帧号
-            loadingPlaceholder(collector, ctx, w, mediaId, frame, 0x66CCAA33);
-            return;
-        }
-        drawVideoQuad(collector, ctx, w, f.location);
+        // 【27.2.4-201】内置帧序列后端（MJPEG / ZIP）已随 Build 112 的内置解码器一起下线。
+        // 走到这里说明：这份素材连外部解码器都不认（旧存档里的 .mjpg / .zip 控件）。
+        // 以前这里会退回逐帧解码 —— 那条路已经没有实现，放行只会得到「永远加载中」。
+        // 现在明确画「格式不支持」占位，并只提示一次（不刷日志、也不偷偷下载几十 MB）。
+        unsupportedVideo(collector, ctx, w, mediaId);
     }
+
+    /** 「放不了」占位（一次性日志）—— 原因分两种，日志与玩家提示要分开说。 */
+    private static void unsupportedVideo(QuadCollector collector, PlaneRenderContext ctx,
+                                         VideoWidget w, String mediaId) {
+        placeholder(collector, ctx, w, 0x66CC3366);
+        String name = top.hmjmfabc.projector.client.media.net.OnlineVideos.mediaName(w);
+        String shown = name == null || name.isEmpty() ? "(未命名)" : name;
+        // ① 帧序列（mjpg/zip）早就没有解码器了；② 其它容器放不了 = 没装/装坏了视频解码器。
+        boolean legacyFrames = shown.toLowerCase(java.util.Locale.ROOT).matches(
+                ".*\\.(mjpg|mjpeg|zip|avi)$");
+        if (w.id != null && UNSUPPORTED_LOGGED.add(w.id)) {
+            if (legacyFrames) {
+                top.hmjmfabc.projector.Projector.LOGGER.warn(
+                        "[Projector][视频] 这份素材是帧序列（MJPEG / ZIP），自 Build 112 起不再支持，"
+                                + "已画占位块：{}（素材={}）。请转成 MP4 / WebM / MKV 后重新添加。",
+                        shown, mediaId == null || mediaId.isEmpty() ? "无" : mediaId);
+            } else {
+                top.hmjmfabc.projector.Projector.LOGGER.warn(
+                        "[Projector][视频] 这份视频放不出来（没有可用的视频解码器），已画占位块：{}"
+                                + "（素材={}）。请确认已安装视频解码前置模组、且文件没有损坏。",
+                        shown, mediaId == null || mediaId.isEmpty() ? "无" : mediaId);
+            }
+        }
+    }
+
+    /** 已经提示过「格式不受支持」的控件（每个控件一次）。 */
+    private static final java.util.Set<java.util.UUID> UNSUPPORTED_LOGGED =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
     /** 【27.1.3】「还没加载」只提示一次（每个控件一次），别每帧刷屏。 */
     private static final java.util.Set<java.util.UUID> NOT_LOADED_LOGGED =
@@ -343,10 +372,10 @@ public final class WidgetRenderer {
                                       VideoWidget w, net.minecraft.resources.ResourceLocation texture) {
         collector.setRenderType(QuadCollector.imageType(texture));
         int tint = QuadCollector.withAlpha(w.tint, w.alpha);
-        double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, 0, 0);
-        double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, w.w, 0);
-        double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, w.w, w.h);
-        double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, 0, w.h);
+        double[] p0 = w.rotPt(0, 0);
+        double[] p1 = w.rotPt(w.w, 0);
+        double[] p2 = w.rotPt(w.w, w.h);
+        double[] p3 = w.rotPt(0, w.h);
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
                 ctx.depth(), 0f, 0f, 1f, 1f, tint);
@@ -409,7 +438,7 @@ public final class WidgetRenderer {
     private static void drawClock(QuadCollector collector, PlaneRenderContext ctx, ClockWidget w) {
         if (degenerate(w)) return;
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         long dayTime = currentDayTime();
         String[] lines = w.clockLines(dayTime);
@@ -428,7 +457,7 @@ public final class WidgetRenderer {
             TextRenderer.drawInBox(collector, ctx, FontManager.get(w.periodFontId),
                     colorPrefix(w.periodColor) + w.periodLabel(dayTime),
                     Math.max(1.0, w.periodSize), -1, 1.0, 1, 1,
-                    w.x, y, w.w, periodH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                    w.x, y, w.w, periodH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
             y += periodH;
         }
         TtfFont clockFont = FontManager.get(w.fontId);
@@ -437,14 +466,14 @@ public final class WidgetRenderer {
         for (int i = lines.length - 1; i >= 0; i--) {
             TextRenderer.drawInBox(collector, ctx, clockFont, colorPrefix(w.color) + lines[i],
                     Math.max(1.0, w.fontSize), -1, 1.0, 1, 1,
-                    w.x, y, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                    w.x, y, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
             y += lineH;
         }
         if (titleH > 0) {
             TextRenderer.drawInBox(collector, ctx, FontManager.get(w.titleFontId),
                     colorPrefix(w.titleColor) + w.title,
                     Math.max(1.0, w.titleSize), -1, 1.0, 1, 1,
-                    w.x, y, w.w, titleH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                    w.x, y, w.w, titleH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
         }
     }
 
@@ -455,7 +484,7 @@ public final class WidgetRenderer {
     private static void drawWeather(QuadCollector collector, PlaneRenderContext ctx, WeatherWidget w) {
         if (degenerate(w)) return;
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         WeatherState state = currentWeather();
         double iconSize = Math.min(w.h, Math.max(1, w.h)) * clamp(w.iconScale, 0.2, 1.0);
@@ -463,10 +492,10 @@ public final class WidgetRenderer {
         boolean iconOk = w.showIcon && QuadCollector.textureReady(state.icon);
         if (iconOk) {
             collector.setRenderType(QuadCollector.imageType(state.icon));
-            double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, 0, (w.h - iconSize) / 2);
-            double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, iconSize, (w.h - iconSize) / 2);
-            double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, iconSize, (w.h + iconSize) / 2);
-            double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, 0, (w.h + iconSize) / 2);
+            double[] p0 = w.rotPt(0, (w.h - iconSize) / 2);
+            double[] p1 = w.rotPt(iconSize, (w.h - iconSize) / 2);
+            double[] p2 = w.rotPt(iconSize, (w.h + iconSize) / 2);
+            double[] p3 = w.rotPt(0, (w.h + iconSize) / 2);
             collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                     p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
                     ctx.depth(), 0f, 0f, 1f, 1f, QuadCollector.withAlpha(0xFFFFFFFF, w.alpha));
@@ -475,12 +504,11 @@ public final class WidgetRenderer {
         if (w.showText) {
             String label = colorPrefix(w.color) + state.label;
             TtfFont font = FontManager.get(w.fontId);
-            // 【⑨.1 关联修正】文字的旋转轴必须与图标/控件方框一致（控件左下角），
-            // 以前这里把轴设成了 (textX, w.y)——图标用 w.x、文字用 textX，
-            // 控件一旦旋转，图标与文字就会各转各的。
+            // 【⑨.1 关联修正 + 27.2.4-200】旋转轴必须是**控件中心**：
+            // 图标/方框/选中框都绕中心转，文字若用别的轴（角、(textX,w.y)），控件一转就各转各的。
             TextRenderer.drawInBox(collector, ctx, font, label, w.fontSize, -1, 1.15, 0, 1,
                     textX, w.y, Math.max(1, w.x + w.w - textX), w.h, w.rot, w.alpha, ctx.depth(),
-                    w.x, w.y);
+                    w.rotX(), w.rotY());
         }
     }
 
@@ -549,7 +577,7 @@ public final class WidgetRenderer {
     private static void drawProgress(QuadCollector collector, PlaneRenderContext ctx, ProgressWidget w, Plane plane) {
         if (degenerate(w)) return;
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         long gameTime = currentGameTime();
         int percent = w.percent(gameTime);
@@ -567,12 +595,12 @@ public final class WidgetRenderer {
         String valueText = (percent < 0 ? 0 : percent) + (w.showPercentSign ? "%" : "");
         TextRenderer.drawInBox(collector, ctx, font, colorPrefix(w.valueColor) + valueText,
                 valueSize, -1, 1.0, 1, 1,
-                w.x, top, w.w, valueLine, w.rot, w.alpha, ctx.depth());
+                w.x, top, w.w, valueLine, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
 
         // 上方小字：已完成
         TextRenderer.drawInBox(collector, ctx, font, w.title,
                 titleSize, -1, 1.0, 1, 1,
-                w.x, top + valueLine, w.w, titleLine, w.rot, w.alpha, ctx.depth());
+                w.x, top + valueLine, w.w, titleLine, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
     }
 
     // ------------------------------------------------------------------
@@ -583,7 +611,7 @@ public final class WidgetRenderer {
                                   top.hmjmfabc.projector.common.widget.TimerWidget w) {
         if (degenerate(w)) return;
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         long gameTime = currentGameTime();
         TtfFont font = FontManager.get(w.fontId);
@@ -596,7 +624,7 @@ public final class WidgetRenderer {
                 : colorPrefix(w.fancyColor(gameTime)) + text;
 
         TextRenderer.drawInBox(collector, ctx, font, styled, Math.max(1.0, w.fontSize), -1, 1.15, 1, 1,
-                w.x, w.y, w.w, w.h, w.rot, alpha, ctx.depth(), w.x, w.y);
+                w.x, w.y, w.w, w.h, w.rot, alpha, ctx.depth(), w.rotX(), w.rotY());
     }
 
     // ------------------------------------------------------------------
@@ -607,7 +635,7 @@ public final class WidgetRenderer {
                                         top.hmjmfabc.projector.common.widget.LeaderboardWidget w) {
         if (degenerate(w)) return;
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         java.util.List<top.hmjmfabc.projector.client.LeaderboardSource.Row> rows =
                 top.hmjmfabc.projector.client.LeaderboardSource.rows(
@@ -624,7 +652,7 @@ public final class WidgetRenderer {
         if (titleH > 0) {
             TextRenderer.drawInBox(collector, ctx, FontManager.get(w.titleFontId),
                     colorPrefix(w.titleColor) + w.title, Math.max(1.0, w.titleSize), -1, 1.0, 1, 1,
-                    w.x, bottom + rowH * rows.size(), w.w, titleH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                    w.x, bottom + rowH * rows.size(), w.w, titleH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
         }
 
         // 序号 / 玩家名 / 分数三列的宽度：分数右对齐、序号左对齐、名字居中占剩余空间
@@ -640,15 +668,15 @@ public final class WidgetRenderer {
             if (w.showIndex) {
                 TextRenderer.drawInBox(collector, ctx, indexFont,
                         colorPrefix(w.indexColor) + (i + 1), Math.max(1.0, w.rowSize), -1, 1.0, 0, 1,
-                        w.x, y, indexW, rowH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                        w.x, y, indexW, rowH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
             }
             TextRenderer.drawInBox(collector, ctx, nameFont,
                     colorPrefix(w.nameColor) + row.name(), Math.max(1.0, w.rowSize), -1, 1.0, 0, 1,
-                    w.x + indexW, y, nameW, rowH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                    w.x + indexW, y, nameW, rowH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
             if (w.showScore) {
                 TextRenderer.drawInBox(collector, ctx, scoreFont,
                         colorPrefix(w.scoreColor) + row.score(), Math.max(1.0, w.rowSize), -1, 1.0, 2, 1,
-                        w.x + indexW + nameW, y, scoreW, rowH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                        w.x + indexW + nameW, y, scoreW, rowH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
             }
             y -= rowH;   // 往下走一行（画布 y 轴向上，减小 y 就是往下）
         }
@@ -660,7 +688,7 @@ public final class WidgetRenderer {
                     : "\uff08\u627e\u4e0d\u5230 " + w.objective + "\uff09";
             TextRenderer.drawInBox(collector, ctx, nameFont, "&7" + hint,
                     Math.max(1.0, w.rowSize), -1, 1.0, 1, 1,
-                    w.x, w.y, w.w, w.h, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                    w.x, w.y, w.w, w.h, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
         }
     }
 
@@ -694,8 +722,61 @@ public final class WidgetRenderer {
     private static final java.util.Map<java.util.UUID, ChessSig> CHESS_REPORT = new java.util.HashMap<>();
 
     /** 棋盘上报的轻量签名（构造它不做任何格式化）。 */
+    /**
+     * 【27.2.1-snapshot-150】把一个**局部坐标矩形**（相对左下角）换算成画布包围盒。
+     * <p>专门用来在日志里对比「格线 / 棋子 / 高亮」三者是否落在同一块地方 ——
+     * 它们走的是不同的绘制原语（solidRect 收局部、drawInBox 收画布），
+     * 只要有一个喂错坐标系，这里三条包围盒就会明显不一样。</p>
+     */
+    private static double[] canvasBox(Widget w, double x0, double y0, double x1, double y1) {
+        double[] a = w.rotPt(x0, y0);
+        double[] b = w.rotPt(x1, y1);
+        double[] c = w.rotPt(x1, y0);
+        double[] d = w.rotPt(x0, y1);
+        return new double[]{
+                Math.min(Math.min(a[0], b[0]), Math.min(c[0], d[0])),
+                Math.min(Math.min(a[1], b[1]), Math.min(c[1], d[1])),
+                Math.max(Math.max(a[0], b[0]), Math.max(c[0], d[0])),
+                Math.max(Math.max(a[1], b[1]), Math.max(c[1], d[1]))};
+    }
+
+    /**
+     * 诊断用：把首格的「渲染坐标 → 画布坐标 → 反算格号」走一整圈，看是否回到 (0,0)。
+     * <p>它同时验两件事：渲染坐标与判定坐标是否同源；以及坐标系有没有混用。</p>
+     */
+    private static String roundTrip(top.hmjmfabc.projector.common.widget.ChessWidget w) {
+        try {
+            double[] local = w.localCenterOf(0, 0);          // 局部（渲染实际用的）
+            double[] canvas = w.rotPt(local[0], local[1]);
+            int[] back = w.cellAt(canvas[0], canvas[1]);
+            return "局部" + String.format(java.util.Locale.ROOT, "(%.1f,%.1f)", local[0], local[1])
+                    + "→画布" + String.format(java.util.Locale.ROOT, "(%.1f,%.1f)", canvas[0], canvas[1])
+                    + "→格号" + java.util.Arrays.toString(back)
+                    + (back != null && back[0] == 0 && back[1] == 0 ? " ✅" : " ❌");
+        } catch (Throwable t) {
+            return "异常:" + t;
+        }
+    }
+
+    /** 已经是**画布坐标**的两点 → 画布包围盒（不许再走 rotPt）。 */
+    private static double[] canvasBoxAlready(Widget w, double x0, double y0, double x1, double y1) {
+        return new double[]{Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)};
+    }
+
+    private static String boxText(double[] b) {
+        return String.format(java.util.Locale.ROOT, "(%.0f,%.0f)-(%.0f,%.0f)",
+                b[0], b[1], b[2], b[3]);
+    }
+
+    /** 物理不变量：{@code inner} 是否整个落在 {@code outer} 包围盒内（留 0.6 画布单位容差）。 */
+    private static boolean boxContains(double[] outer, double[] inner) {
+        return inner[0] >= outer[0] - 0.6 && inner[1] >= outer[1] - 0.6
+                && inner[2] <= outer[2] + 0.6 && inner[3] <= outer[3] + 0.6;
+    }
+
     private record ChessSig(int kind, int cols, int rows, boolean intersections, double spacing,
-                            double w, double h, double fs, int pieces, String font) {
+                            double w, double h, double fs, int pieces, String font,
+                            int x, int y, int rot) {
     }
 
     /** 棋盘诊断的限流时间戳（毫秒）：斗蛐蛐自动对打时「棋子=」每手都变。 */
@@ -711,31 +792,52 @@ public final class WidgetRenderer {
         int cw = rules.width(), ch = rules.height();
         if (cw <= 0 || ch <= 0) return;
 
-        // 四层沿法线错开（见 CHESS_LAYER 的说明）
+        // 五层沿法线错开（见 CHESS_LAYER 的说明）
+        // ⚠ 层序（都由 CHESS_LAYER 错开，共面会互相闪烁/被盖掉）：
+        //   dBase   = 控件底色（background）
+        //   dBoard  = 棋盘底色（玩家设了 boardColor 才有；必须在格线**之下**）
+        //   dGrid   = 格线
+        //   dMark   = 最后一手高亮 / 选中 / 合法落点
+        //   dPiece  = 棋子
+        //   dBorder = 棋盘外框（**最前**）
+        // ⚠ 深度方向是「origin + normal × depth」，而 normal 朝玩家 ⇒ **depth 越大越靠前**。
+        //   所以要把「必须看得见」的东西放在**最大**的 depth 上。
+        //   上一版我把边框放在格线之后（+0.015 < 格线 +0.030）⇒ 白边被格线整圈压住，
+        //   玩家报「盘子修好了、白色那圈还是看不见」。
+        // 【152】同时修掉「棋盘底色被放到最前层」——那会让底色盖住格线与棋子
+        //   （默认透明所以一直没暴露）。现在底色独占一层、夹在控件底色与格线之间。
         final double dBase = ctx.depth();
-        final double dGrid = dBase + CHESS_LAYER;
-        final double dMark = dBase + CHESS_LAYER * 2;
-        final double dPiece = dBase + CHESS_LAYER * 3;
+        final double dBoard = dBase + CHESS_LAYER;
+        final double dGrid = dBase + CHESS_LAYER * 2;
+        final double dMark = dBase + CHESS_LAYER * 3;
+        final double dPiece = dBase + CHESS_LAYER * 4;
+        final double dBorder = dBase + CHESS_LAYER * 5;      // 最前：边框永远看得见
+        PlaneRenderContext ctxBorder = depthShift(ctx, dBorder);
+        PlaneRenderContext ctxBoard = depthShift(ctx, dBoard);
         PlaneRenderContext ctxGrid = depthShift(ctx, dGrid);
         PlaneRenderContext ctxMark = depthShift(ctx, dMark);
 
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.background);
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h, w.background);
         }
         // 棋盘底色（压在所有格线之下）。【27.2-pre-136】默认是**全透明**：
         // 用户要求「黑色底改成透明底」，所以这里只在玩家真的设了颜色时才填。
         if ((w.boardColor >>> 24) != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, w.boardColor);
+            solidRect(collector, ctxBoard, w, 0, 0, w.w, w.h, w.boardColor);
         }
         // 【27.2-pre-136】棋盘外框（可调色；与音乐控件的白框同一套设计语言）。
-        // 画在**底色那一层**（dBase）：底色默认透明，那里空着，不会和格线/高亮抢深度。
+        // 画在**自己那一层**（ctxBorder）：以前和底色同层（dBase），会被格线/棋子盖掉。
         if (w.showBorder && (w.borderColor >>> 24) != 0) {
-            double bt = Math.max(0.5, Math.min(Math.min(w.w, w.h) * 0.022, 1.6));
+            // ⚠ 这四条用 solidRect 画（收**局部**坐标）⇒ 与棋盘底一样、**不要**加左下角。
+            //   历史上这里被我漏改过一版：格线加了、边框没加 ⇒ 玩家看到「棋盘修好了，
+            //   但白色那圈边框还在别处」。
+            // 线宽：原来上限 1.6 画布单位（=10 分之一个方块），在墙上很容易看漏 ⇒ 提到 2.6
+            double bt = Math.max(0.6, Math.min(Math.min(w.w, w.h) * 0.03, 2.6));
             int bc = QuadCollector.withAlpha(w.borderColor, w.alpha);
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + bt, bc);
-            solidRect(collector, ctx, w, w.x, w.y + w.h - bt, w.x + w.w, w.y + w.h, bc);
-            solidRect(collector, ctx, w, w.x, w.y + bt, w.x + bt, w.y + w.h - bt, bc);
-            solidRect(collector, ctx, w, w.x + w.w - bt, w.y + bt, w.x + w.w, w.y + w.h - bt, bc);
+            solidRect(collector, ctxBorder, w, 0, 0, w.w, bt, bc);
+            solidRect(collector, ctxBorder, w, 0, w.h - bt, w.w, w.h, bc);
+            solidRect(collector, ctxBorder, w, 0, bt, bt, w.h - bt, bc);
+            solidRect(collector, ctxBorder, w, w.w - bt, bt, w.w, w.h - bt, bc);
         }
 
         // ---- 几何布局：交叉点式 vs 格心式 ----
@@ -744,8 +846,13 @@ public final class WidgetRenderer {
         var geo = w.geometry();
         final boolean intersections = geo.intersections();
         double spacing = geo.spacing();
+        // ⚠ geo 给的是**局部**坐标（相对左下角），而 solidRect 收的**也是**局部坐标
+        //   （见 solidRect 的坐标系契约）⇒ 这里**直接原样往下传**，不许再加 w.x/w.y。
+        //   （踩过两次：一次完全不加 ⇒ 格线跑到平面角落；一次加过头 ⇒ 边框被平移两次。
+        //     现在两边约定同一套，唯一的换算点在 solidRect 里。）
         double ox = geo.ox();
         double oy = geo.oy();
+        // 高亮/选中/提示要走 solidRect ⇒ 需要**局部**坐标，用 localCenterOf（见下）
         double lineT = Math.max(1.1, Math.min(spacing * 0.09, 3.0));
 
         // ---- 格线 ----
@@ -797,18 +904,22 @@ public final class WidgetRenderer {
             }
         }
 
-        // ---- 最后一手高亮（中心由 centerOf 给出，与命中检测同源）----
+        // ---- 最后一手高亮 ----
+        // ⚠ 下面的高亮全部用 {@code localCenterOf}（**局部**坐标）：solidRect 收的是局部坐标。
+        //   以前用的是 centerOf（**画布**坐标）⇒ 又被减一次左下角、又绕中心转一次，
+        //   玩家看到的就是「棋子在一处、格子在一处、高亮/判定又在另一处」。
+        //   棋子的那条链（TextRenderer.drawInBox）要的才是画布坐标，两者不能混。
         if (w.highlightLast && g.lastTo >= 0 && g.lastTo < cw * ch) {
             int lx = g.lastTo % cw, ly = g.lastTo / cw;
             double half = spacing * (intersections ? 0.42 : 0.5);
-            double[] c = w.centerOf(lx, ly);
+            double[] c = w.localCenterOf(lx, ly);
             solidRect(collector, ctxMark, w, c[0] - half, c[1] - half,
                     c[0] + half, c[1] + half, w.highlightColor);
         }
         // 世界内点选时选中的棋子
         if (w.selCol >= 0 && w.selCol < cw && w.selRow >= 0 && w.selRow < ch) {
             double half = spacing * (intersections ? 0.46 : 0.5);
-            double[] c = w.centerOf(w.selCol, w.selRow);
+            double[] c = w.localCenterOf(w.selCol, w.selRow);
             // 白色（与格线/边框同一套）；比「最后一手」更亮一点以示区别
             solidRect(collector, ctxMark, w, c[0] - half, c[1] - half,
                     c[0] + half, c[1] + half, 0x99FFFFFF);
@@ -820,7 +931,7 @@ public final class WidgetRenderer {
         // 高亮的点与点击判定同源（都来自规则层的 legalMoves），不存在第二套真相。
         try {
             for (top.hmjmfabc.projector.common.game.Move hm : w.hintMoves()) {
-                double[] c = w.centerOf(hm.tx(), hm.ty());
+                double[] c = w.localCenterOf(hm.tx(), hm.ty());   // 局部坐标（solidRect）
                 boolean capture = g.at(hm.tx(), hm.ty()) != 0;
                 if (w.selCol < 0 && g.moveCount == 0) {
                     // 第一手：整块点亮 + 外圈，务必一眼看到（空盘时只有「天元」一个点）
@@ -866,7 +977,7 @@ public final class WidgetRenderer {
                         colorPrefix(w.sideColor(Integer.signum(p))) + glyph,
                         fs, -1, 1.0, 1, 1,
                         bx, by, box, box,
-                        w.rot, w.alpha, dPiece, w.x, w.y);
+                        w.rot, w.alpha, dPiece, w.rotX(), w.rotY());
             }
         }
 
@@ -874,15 +985,46 @@ public final class WidgetRenderer {
         // 所以把「到底算了什么」落一行日志。只在关键参数变化时打印。
         // 【27.2-pre-136】先比轻量签名，只有真的变了才拼日志串
         ChessSig sig = new ChessSig(g.kind, cw, ch, intersections, spacing, w.w, w.h, fs,
-                pieces, font == null ? "" : FontManager.displayName(w.fontId));
+                pieces, font == null ? "" : FontManager.displayName(w.fontId),
+                // 【27.2.1-snapshot-150】把位置与角度也算进签名：挪动/旋转控件时重打一行，
+                // 排查「棋子/格子/判定区对不上」时能立刻看到三个坐标系的实际取值。
+                (int) w.x, (int) w.y, (int) w.rot);
         String report = null;
         if (!sig.equals(CHESS_REPORT.put(w.id, sig))) {
+            // ⚠ 诊断自己也要守坐标系契约：canvasBox 收**局部**、centerOf 给**画布**。
+            //   （历史上这里混过一次，日志里的「包围盒对不上」是诊断自己造的假象，白查两轮。）
+            double[] boxGrid = canvasBox(w, geo.ox(), geo.oy(),
+                    geo.ox() + (cw - 1) * spacing, geo.oy() + (ch - 1) * spacing);
+            double[] boxPiece = canvasBox(w,
+                    w.localCenterOf(0, ch - 1)[0], w.localCenterOf(0, ch - 1)[1],
+                    w.localCenterOf(cw - 1, 0)[0], w.localCenterOf(cw - 1, 0)[1]);
+            // 高亮：有最后一手就报那一格，否则退回棋盘对角线
+            int mk = (w.highlightLast && g.lastTo >= 0 && g.lastTo < cw * ch) ? g.lastTo : -1;
+            double[] hc = mk >= 0 ? w.localCenterOf(mk % cw, mk / cw) : w.localCenterOf(cw - 1, 0);
+            double[] boxMark = canvasBox(w, hc[0] - spacing * 0.5, hc[1] - spacing * 0.5,
+                    hc[0] + spacing * 0.5, hc[1] + spacing * 0.5);
+            // 控件自身（= 棋盘底 / 外框所在）的包围盒，用来一眼看出「边框有没有落在棋盘上」
+            double[] boxSelf = w.rotatedAabb();
             report = String.format(java.util.Locale.ROOT,
-                    "%s %dx%d %s 间距=%.2f 框=%.1fx%.1f 字号=%.1f 棋子=%d 字体=%s",
+                    "%s %dx%d %s 间距=%.2f 框=%.1fx%.1f 字号=%.1f 棋子=%d 字体=%s 边框=%s"
+                            + "｜坐标系: 控件x/y=%.1f,%.1f rot=%.0f° 几何原点(局部)=%.1f,%.1f"
+                            + " 首格中心(画布)=%.1f,%.1f 首格反算=%s"
+                            + "｜包围盒(画布): 外框/底盘=%s 格线=%s 棋子=%s 高亮=%s"
+                            + " 格线在框内=%s 棋子在框内=%s",
                     top.hmjmfabc.projector.common.game.GameKind.name(g.kind), cw, ch,
                     intersections ? "交叉点式" : "格心式",
                     spacing, w.w, w.h, fs, pieces,
-                    font == null ? "null!!" : FontManager.displayName(w.fontId));
+                    font == null ? "null!!" : FontManager.displayName(w.fontId),
+                    w.showBorder ? (Integer.toHexString(w.borderColor)) : "关",
+                    w.x, w.y, w.rot, geo.ox(), geo.oy(),
+                    w.centerOf(0, 0)[0], w.centerOf(0, 0)[1],
+                    // ⚠ centerOf 给**画布**值、cellAt 收**画布**值 ⇒ 直接喂
+                    roundTrip(w),
+                    boxText(boxSelf), boxText(boxGrid), boxText(boxPiece), boxText(boxMark),
+                    // 物理不变量：格线与棋子必须落在**控件自身**的包围盒里。
+                    // 一旦 solidRect 的坐标系约定再被改错，格线/棋子会整体平移，这里立刻变 ❌。
+                    boxContains(boxSelf, boxGrid) ? "✅" : "❌",
+                    boxContains(boxSelf, boxPiece) ? "✅" : "❌");
         }
         if (report != null) {
             // 关键异常（一个子都没画出来 / 字体没找到 / 间距太小）永远立刻打；
@@ -964,7 +1106,7 @@ public final class WidgetRenderer {
     }
 
     private static void placeholder(QuadCollector collector, PlaneRenderContext ctx, Widget w, int argb) {
-        solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h, QuadCollector.withAlpha(argb, w.alpha));
+        solidRect(collector, ctx, w, 0, 0, w.w, w.h, QuadCollector.withAlpha(argb, w.alpha));
     }
 
     // ------------------------------------------------------------------
@@ -1002,9 +1144,9 @@ public final class WidgetRenderer {
         double lineH = size * 1.35;
         double top = w.y + Math.max(0, (w.h - lineH * 2) * 0.5);
         TextRenderer.drawInBox(collector, ctx, font, "&f\u52a0\u8f7d\u4e2d\u2026", size, -1, 1.15, 1, 1,
-                w.x, top, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                w.x, top, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
         TextRenderer.drawInBox(collector, ctx, font, "&7" + line2, size * 0.8, -1, 1.15, 1, 1,
-                w.x, top + lineH, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                w.x, top + lineH, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
     }
 
     /** 人类可读的字节数（B / KB / MB）。 */
@@ -1016,14 +1158,38 @@ public final class WidgetRenderer {
         return String.format(java.util.Locale.ROOT, "%.2fMB", bytes / 1048576.0);
     }
 
+    /**
+     * 实心矩形（控件底色 / 棋盘底 / 棋盘边框 / 占位块 / 格线 / 高亮全靠它）。
+     *
+     * <p><b>★ 坐标系契约（唯一真源，改了这里就是全局改约定）：入参是「控件局部坐标」
+     * —— 相对控件左下角，范围 {@code 0..w / 0..h}，未旋转。</b>
+     * 内部用 {@link Widget#rotPt(double, double)} 一步换算到画布（绕局部中心旋转 + 加左下角），
+     * 而 {@code collector.canvasQuad} 收的是画布坐标 ⇒ 整条链闭合。</p>
+     *
+     * <p>【27.2.2-snapshot-152 事故】上一版这里的实现是
+     * {@code w.rotPt(x0 - w.x, y0 - w.y)}（＝收**画布**坐标），
+     * 而同一轮把**所有调用方**都改成了传局部坐标（{@code 0,0,w.w,w.h}）——
+     * 两边各自「看起来都对」，合起来就是：矩形被整体平移 {@code -R(x,y)}，
+     * 画到**画布原点所在的平面角落**去了。<br>
+     * 表现：棋盘格线（传画布）、棋子（drawInBox 传画布）全都在正确位置，
+     * 只有**棋盘外框那一圈白边**不见了 —— 因为它被画到了平面角落里，
+     * 玩家连报两轮「棋盘边框还是没修」。同理，所有控件的「底色」与
+     * 「加载中占位块」也一起被画到角落去了（底色默认透明所以没被发现）。</p>
+     *
+     * <p><b>别再改回画布坐标。</b>本文件里 {@code solidRect} 的调用方**全部**传局部：
+     * 底色/占位块 {@code 0,0,w.w,w.h}、棋盘底与边框 {@code 0..w}、
+     * 格线与高亮走 {@link ChessWidget#geometry()}/{@code localCenterOf} 的局部几何。
+     * 需要画「画布坐标」的东西请走 {@code TextRenderer.drawInBox} 或
+     * {@code collector.canvasQuad}，不要从这里绕。</p>
+     */
     private static void solidRect(QuadCollector collector, PlaneRenderContext ctx, Widget w,
                                   double x0, double y0, double x1, double y1, int argb) {
         if (argb >>> 24 == 0) return;
         if (Math.abs(x1 - x0) < 1.0e-4 || Math.abs(y1 - y0) < 1.0e-4) return;
-        double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, x0 - w.x, y0 - w.y);
-        double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, x1 - w.x, y0 - w.y);
-        double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, x1 - w.x, y1 - w.y);
-        double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, x0 - w.x, y1 - w.y);
+        double[] p0 = w.rotPt(x0, y0);
+        double[] p1 = w.rotPt(x1, y0);
+        double[] p2 = w.rotPt(x1, y1);
+        double[] p3 = w.rotPt(x0, y1);
         collector.setRenderType(QuadCollector.imageType(WHITE));
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],

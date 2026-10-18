@@ -435,6 +435,14 @@ public class ChessWidget extends Widget {
                            int cols, int rows) {
     }
 
+    // ⚠ ox/oy 是**控件局部坐标**（相对左下角、0..w），**不含**控件左下角 ——
+    //   渲染侧统一用局部坐标，旋转由各绘制原语内部绕**控件中心**处理：
+    //   · 棋盘底/边框/格线/高亮用 {@code solidRect}（收局部坐标）；
+    //   · 棋子用 {@code TextRenderer.drawInBox}，它自己会绕轴心（画布中心）旋转
+    //     ⇒ 给它**局部**方框 + 画布轴心，旋转后才正好与格线/高亮重合。
+    //   ⚠ 曾经这里有半版是「画布坐标（x + …）」：那样 solidRect（局部）与 drawInBox（画布）
+    //     至少有一条会偏一个 (x, y)，玩家看到的就是「格线与棋子差特别远」。
+
     /** 算出当前棋盘几何。 */
     public Geometry geometry() {
         ensureBoard();
@@ -447,23 +455,43 @@ public class ChessWidget extends Widget {
         if (inter) {
             // 交叉点式：四周留半个间距的边距，所以分母直接用列/行数
             spacing = Math.min(w / cw, h / ch);
-            ox = x + (w - spacing * (cw - 1)) * 0.5;
-            oy = y + (h - spacing * (ch - 1)) * 0.5;
+            ox = (w - spacing * (cw - 1)) * 0.5;       // 局部坐标（相对左下角）
+            oy = (h - spacing * (ch - 1)) * 0.5;
         } else {
             // 格心式：格子铺满整个框
             spacing = Math.min(w / cw, h / ch);
-            ox = x + (w - spacing * cw) * 0.5;
-            oy = y + (h - spacing * ch) * 0.5;
+            ox = (w - spacing * cw) * 0.5;
+            oy = (h - spacing * ch) * 0.5;
         }
         return new Geometry(spacing, ox, oy, inter, cw, ch);
     }
 
     /**
-     * 第 (col,row) 个点位/格子的<b>中心</b>的画布坐标。
+     * 第 (col,row) 个点位/格子的<b>中心</b>，**画布坐标**（含控件左下角；未旋转）。
+     *
+     * <p>⚠ 两套坐标并存，各自对应一种绘制原语，别再混（这是本项目栽最多次的地方）：</p>
+     * <ul>
+     *   <li>{@link #centerOf}（本方法）= <b>画布坐标</b> —— 给 {@code TextRenderer.drawInBox}
+     *       画棋子用（它内部直接 {@code canvasQuad}）；</li>
+     *   <li>{@link #localCenterOf} = <b>局部坐标</b>（相对左下角）—— 给 {@code solidRect}
+     *       画高亮/选中/提示用（那个原语会自己减左下角），也给格线算位置。</li>
+     * </ul>
+     * <p>命中 {@link #cellAt} 收画布坐标，内部先 {@code toLocal} 逆旋转 + 减左下角，
+     * 再按**局部**几何原点算格号 —— 与 {@link #localCenterOf} 严格互逆。</p>
      *
      * <p>行序：第 0 行在<b>最上面</b>（画布 y 轴向上），所以纵坐标用 {@code rows-1-row}。</p>
      */
     public double[] centerOf(int col, int row) {
+        double[] l = localCenterOf(col, row);
+        // 局部 → **未旋转的画布坐标**（只平移）。
+        // ⚠ 这里**不能**加旋转：棋子由 {@code TextRenderer.drawInBox} 画，而那个函数
+        //   会以传进去的轴心（控件画布中心）旋转 —— 我们再转一次就变成转两遍，
+        //   表现为「有旋转角时棋子整体偏一个多格子」（本轮实测就是这个）。
+        return new double[]{x + l[0], y + l[1]};
+    }
+
+    /** 同上，但返回**局部坐标**（相对左下角、未旋转）—— 给 solidRect 与格线用。 */
+    public double[] localCenterOf(int col, int row) {
         Geometry geo = geometry();
         double cx = geo.intersections() ? geo.ox() + col * geo.spacing()
                 : geo.ox() + (col + 0.5) * geo.spacing();
@@ -473,7 +501,10 @@ public class ChessWidget extends Widget {
     }
 
     /**
-     * {@link #centerOf} 的逆运算：把画布坐标换算成点位/格子下标。
+     * {@link #centerOf} 的逆运算：把**画布坐标**换算成点位/格子下标。
+     *
+     * <p>⚠ 入参是**画布坐标**：先 {@code toLocal}（绕中心逆旋转 + 减左下角）换到**局部**坐标系，
+     * 再按几何原点（也是局部坐标）反算格号 —— 与 {@link #localCenterOf} 严格互逆。</p>
      *
      * @return {@code {col,row}}；落在棋盘外返回 null
      */
@@ -481,8 +512,11 @@ public class ChessWidget extends Widget {
     public int[] cellAt(double canvasX, double canvasY) {
         Geometry geo = geometry();
         if (geo.spacing() <= 0.001) return null;
-        double lx = (canvasX - geo.ox()) / geo.spacing();
-        double ly = (canvasY - geo.oy()) / geo.spacing();
+        // 画布坐标 → **局部坐标**（先绕中心逆旋转、再减左下角）：几何原点就在局部坐标系里。
+        // ⚠ 与 Widget.rotPt（局部 → 画布）严格互逆；少一步就会整体偏 (x, y)。
+        double[] unrotated = toLocal(canvasX, canvasY);
+        double lx = (unrotated[0] - geo.ox()) / geo.spacing();
+        double ly = (unrotated[1] - geo.oy()) / geo.spacing();
         int col, row;
         if (geo.intersections()) {
             col = (int) Math.round(lx);

@@ -90,9 +90,12 @@ public class MediaPickerScreen extends ProjectorScreen {
             LocalMedia.ensureDirectories();
             status = LocalMedia.mediaDir().toString();
         });
+        // 【27.2.4-200 修】这一行（height-pad-120）已经被上面的「新建在线视频」占了，
+        // 两个控件矩形完全重合 ⇒ 建视频时复选框永远点不到（而那正是唯一需要它的场景）。
+        // 挪到再上面一行（-144）。
         var orig = button((originalQuality ? "\u2611 " : "\u2610 ")
                         + "\u539f\u753b\u4e0a\u4f20\uff08\u4e0d\u538b\u753b\u8d28\uff09",
-                bx, this.height - pad - 120, Math.max(60, bw), 20, b -> {
+                bx, this.height - pad - 144, Math.max(60, bw), 20, b -> {
                     originalQuality = !originalQuality;
                     rebuildWidgets();
                 });
@@ -165,8 +168,7 @@ public class MediaPickerScreen extends ProjectorScreen {
                 height = sz[1];
             }
             // 先让本地就绪，玩家不必等服务端往返。
-            // 交给外部解码器放的格式没有内置帧索引，只登记文件本身
-            //（走 finish 会因为它「不是 MJPEG/ZIP」而被标成解码失败）。
+            // 【27.2.4-201】视频一律只登记文件本身（内置帧解码已下线，finish 对视频也只做登记）。
             if (isVideo && MediaUploader.externalVideo(sendPath)) {
                 MediaCache.registerExternal(hash, sendPath);
             } else {

@@ -26,6 +26,7 @@ public class T34 {
         System.out.println("== T34 网页控件（27.2）==");
         urlRules();
         geometry();
+        rotationContract();
         nbt();
         kindRegistry();
         licenseBoundary();
@@ -117,6 +118,296 @@ public class T34 {
         check("底部是按钮栏区域", w.inBar(1.0, 0.5) && !w.inBar(w.w / 2, w.h / 2));
         w.showControls = false;
         check("关掉按钮栏后一律不命中", w.hitButton(1.0, 0.5) == -1 && !w.inBar(1.0, 0.5));
+    }
+
+    // ------------------------------------------------------------------ 旋转（27.2.1-hotfix-144）
+
+    /**
+     * 旋转契约：**绕控件中心**转、框跟着转、转完还能拖到画布各处。
+     *
+     * <p>这三条对应玩家报的祖传 bug：①转完位置就错（老实现绕左下角甩出去）
+     * ②控件框不跟着转（渲染绕左下角、选中框绕中心，两份轴心）
+     * ③|rot| 大了以后某些位置拖不到（夹取用未旋转的 w/h，180° 时往右卡住）。</p>
+     */
+    private static void rotationContract() {
+        top.hmjmfabc.projector.common.widget.WebWidget w =
+                new top.hmjmfabc.projector.common.widget.WebWidget();
+        w.x = 40;
+        w.y = 30;
+        w.w = 20;
+        w.h = 10;
+
+        // ① 轴心 = 中心：四角旋转后的质心必须还在控件中心
+        for (double deg : new double[]{0, 30, 90, 179, 180, -90, -135, 270}) {
+            w.rot = deg;
+            double[][] c = w.rotCorners();
+            double mx = 0, my = 0;
+            for (double[] p : c) {
+                mx += p[0] / 4.0;
+                my += p[1] / 4.0;
+            }
+            // ⚠ 比的是**画布坐标**的控件中心（x + w/2）。rotX()/rotY() 是「局部坐标系里的
+            //    轴心」（渲染原语拿它当轴心用），不是画布坐标 —— 别在这里混用。
+            double ccx = w.x + w.w / 2.0, ccy = w.y + w.h / 2.0;
+            check("rot=" + deg + "：四角质心 = 控件中心（绕中心旋转）",
+                    Math.abs(mx - ccx) < 1.0e-6 && Math.abs(my - ccy) < 1.0e-6);
+        }
+
+        // 0° 时四角就是未旋转的矩形
+        w.rot = 0;
+        double[][] c0 = w.rotCorners();
+        check("0° 时四角 = 未旋转矩形",
+                Math.abs(c0[0][0] - 40) < 1.0e-9 && Math.abs(c0[0][1] - 30) < 1.0e-9
+                        && Math.abs(c0[2][0] - 60) < 1.0e-9 && Math.abs(c0[2][1] - 40) < 1.0e-9);
+
+        // ② 180°：包围盒与未旋转时**完全一样**（老实现会甩到左下 ⇒ 位置看着就错）
+        w.rot = 0;
+        double[] b0 = w.rotatedAabb();
+        w.rot = 180;
+        double[] b180 = w.rotatedAabb();
+        check("180° 的包围盒与 0° 完全重合（位置不会跑）",
+                Math.abs(b0[0] - b180[0]) < 1.0e-9 && Math.abs(b0[1] - b180[1]) < 1.0e-9
+                        && Math.abs(b0[2] - b180[2]) < 1.0e-9 && Math.abs(b0[3] - b180[3]) < 1.0e-9);
+
+        // 90°：包围盒换成「高×宽」，仍然以中心对称
+        w.rot = 90;
+        double[] b90 = w.rotatedAabb();
+        check("90° 的包围盒宽高互换",
+                Math.abs((b90[2] - b90[0]) - w.h) < 1.0e-6
+                        && Math.abs((b90[3] - b90[1]) - w.w) < 1.0e-6);
+        check("90° 的包围盒仍然以控件中心为中心",
+                Math.abs((b90[0] + b90[2]) / 2 - (w.x + w.w / 2.0)) < 1.0e-6
+                        && Math.abs((b90[1] + b90[3]) / 2 - (w.y + w.h / 2.0)) < 1.0e-6);
+
+        // ③ 命中检测与渲染同源：旋转后的四角位置必须能命中；中心必须命中
+        for (double deg : new double[]{0, 45, 90, 180, -60}) {
+            w.rot = deg;
+            boolean ok = w.hitTest(w.x + w.w / 2.0, w.y + w.h / 2.0, 0.0);
+            // 取「局部四角的质心附近」与「局部 (5,5) 映射过去」都该命中
+            double[] p = w.rotPt(5, 5);
+            ok = ok && w.hitTest(p[0], p[1], 0.001);
+            // 离中心远一点（画布局部 (-5,-5) 映射）必须打不中
+            double[] q = w.rotPt(-5, -5);
+            ok = ok && !w.hitTest(q[0], q[1], 0.001);
+            check("rot=" + deg + "：命中检测与渲染同源（局部点映射过去能打中）", ok);
+        }
+
+        // ④ 旋转不改数据：转一圈回来，四角与位置都还原
+        w.rot = 0;
+        double[] before = w.rotPt(0, 0);
+        w.rot = 360;
+        double[] after = w.rotPt(0, 0);
+        check("转 360° 等价于没转",
+                Math.abs(before[0] - after[0]) < 1.0e-6 && Math.abs(before[1] - after[1]) < 1.0e-6);
+        check("旋转不动 x/y/w/h（数据语义没变）",
+                w.x == 40 && w.y == 30 && w.w == 20 && w.h == 10);
+
+        // ⑤ 夹取：180° 时必须还能往右拖到画布右缘附近（用户报的「卡住」）
+        w.rot = 180;
+        double[] cRight = top.hmjmfabc.projector.client.gui.CanvasWidgetView
+                .clampPos(w, 999, 30, 64, 64);
+        check("180° 时往右拖不会被卡在左边（x 能到画布右缘附近）", cRight[0] > 64 - 20);
+        double[] cLeft = top.hmjmfabc.projector.client.gui.CanvasWidgetView
+                .clampPos(w, -999, 30, 64, 64);
+        check("180° 时往左拖有下界（不会跑到画布外几百单位）", cLeft[0] > -80);
+        // 夹取前后：包围盒至少有一半落在画布内
+        double[] box = w.rotatedAabb();
+        double lox = box[0] - w.x, loy = box[1] - w.y;
+        double bw = box[2] - box[0], bh = box[3] - box[1];
+        double bx = cRight[0] + lox, by = cRight[1] + loy;
+        check("夹取后包围盒仍在画布内（至少一半）",
+                bx + bw / 2 >= 0 && bx + bw / 2 <= 64 && by + bh / 2 >= 0 && by + bh / 2 <= 64);
+
+        // ⑥ 轴心只有一个真源：渲染里不许再出现「用 w.x/w.y 当轴心」的写法
+        try {
+            int offenders = 0;
+            for (String rel : new String[]{
+                    "client/render/WidgetRenderer.java",
+                    "client/render/MusicWidgetRenderer.java",
+                    "client/render/WebWidgetRenderer.java",
+                    "client/render/SelectionRenderer.java",
+                    "client/web/WebOverlayRenderer.java"}) {
+                String src = new String(Files.readAllBytes(Path.of(
+                        "src/main/java/top/hmjmfabc/projector/" + rel)),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                // 注释里可以提，代码里不许有：TextRenderer.rot(w.x, w.y, …) / new Frame(w.x, w.y, …)
+                for (String line : src.split("\n")) {
+                    String code = line.trim();
+                    if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*")) continue;
+                    if (code.contains("TextRenderer.rot(w.x, w.y,")
+                            || code.contains("new Frame(w.x, w.y,")) {
+                        offenders++;
+                    }
+                }
+            }
+            check("渲染层不再有「绕左下角」的旋转（轴心唯一）", offenders == 0);
+        } catch (Exception e) {
+            check("读不到渲染源码：" + e, false);
+        }
+
+        // ⑦ 坐标系不许混：音乐/网页那套绘制原语的入参是**控件局部坐标**
+        //    （原语内部统一「减半宽/半高再绕中心转」）。这一条就是防本次的偏移 bug：
+        //    谁再往原语里塞画布坐标（或把代理控件的原点设成 w.x/w.y），断言立刻红。
+        try {
+            String music = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/render/MusicWidgetRenderer.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("音乐底/边框传的是局部坐标（0..w / 0..h）",
+                    music.contains("double x0 = 0;") && music.contains("double x1 = w.w;"));
+            check("音乐原语内部按局部坐标绕中心转（用 rotPt，不再手动减 w.x）",
+                    music.contains("w.rotPt(x0, y0)") && !music.contains("x0 - w.x"));
+            check("音乐播放键/波形/文字区域都传局部坐标（不再先 offset 再喂原语）",
+                    music.contains("double[] box = w.buttonBox();")
+                            && music.contains("double[] mid = w.waveBox();"));
+            String video = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/render/VideoOverlayRenderer.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("视频浮层全程用局部坐标（不许再有「局部→画布」的 offset 加法）",
+                    !video.contains("w.x + local[0]")
+                            && video.contains("double[] box = w.progressBox();")
+                            && video.contains("double[] b = w.controlBox();"));
+            // 只在**去掉注释**后的代码里查（注释里刻意写了「这里以前有 offset(...)，别加回来」）
+            StringBuilder codeOnly = new StringBuilder();
+            for (String line : video.split("\n")) {
+                String tr = line.trim();
+                if (tr.startsWith("*") || tr.startsWith("//") || tr.startsWith("/*")) continue;
+                codeOnly.append(line).append('\n');
+            }
+            check("视频浮层的代码里没有残留的 offset(...) 调用",
+                    !codeOnly.toString().contains("offset(w,"));
+            String web = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/web/WebOverlayRenderer.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("网页浮层的轴心是控件中心（Frame.of 用 rotX/rotY）",
+                    web.contains("new Frame(w.rotX(), w.rotY(), w.rot)"));
+        } catch (Exception e) {
+            check("读不到渲染源码：" + e, false);
+        }
+
+        // ⑧ 棋类：命中必须**逆旋转**（旋转后落子不准就是这个漏了）
+        try {
+            String chess = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/common/widget/ChessWidget.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            int cellAt = chess.indexOf("public int[] cellAt(");
+            // 必须**先绕画布中心逆旋转**，再按几何原点（画布坐标）算格子；
+            // 少这一步或换成 toLocal（会再减左下角）都会让每一格整体偏 (x, y) ——
+            // 那就是「棋子/格子/判定区在三个不一样的地方」。
+            int toLocal = chess.indexOf("toLocal(canvasX, canvasY)", cellAt);
+            check("棋类 cellAt 把画布坐标换算回局部再算格子（与 centerOf/rotPt 严格互逆）",
+                    cellAt >= 0 && toLocal > cellAt);
+            // 几何原点必须与 centerOf / 格线 / 高亮同一个坐标系（**局部**）——
+            // 用画布坐标会让 solidRect（局部）与 drawInBox（画布）至少一条偏 (x, y)
+            check("棋类几何原点是局部坐标（与 centerOf/格线/高亮同源）",
+                    chess.contains("ox = (w - spacing * (cw - 1)) * 0.5;")
+                            || chess.contains("ox = (w - spacing * cw) * 0.5;"));
+            // 棋盘本体的 solidRect 必须传局部坐标
+            String renderer = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/render/WidgetRenderer.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("棋盘底/边框的 solidRect 传局部坐标（不再传画布 w.x/w.y）",
+                    !renderer.contains("solidRect(collector, ctx, w, w.x,"));
+        } catch (Exception e) {
+            check("读不到棋类源码：" + e, false);
+        }
+
+        // ⑨ 预览图必须画成**旋转后**的样子（否则玩家看到的是「变形的未旋转矩形」）
+        try {
+            String canvas = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/gui/CanvasWidgetView.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("预览里控件本体带旋转矩阵（pose.mulPose + rotationZ）",
+                    canvas.contains("gfx.pose()") && canvas.contains("rotationZ")
+                            && canvas.contains("Math.toRadians(-w.rot)"));
+            check("预览用 try/finally 还原 pose（不然网格与后续控件全跟着转）",
+                    canvas.contains("pose.popPose()") && canvas.contains("finally"));
+        } catch (Exception e) {
+            check("读不到预览源码：" + e, false);
+        }
+
+        // ⑩ I 键重播流程：三态（没选平面 / 没流程 / 有流程）
+        try {
+            String input = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/ClientInputHandler.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String keys = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/ProjectorKeys.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("I 键有独立键位绑定（可改键，属于 projector 分类）",
+                    keys.contains("KEY_SEQ_REPLAY") && keys.contains("InputConstants.KEY_I"));
+            check("I 键处理已挂到主循环", input.contains("KEY_SEQ_REPLAY"));
+            check("没流程时提示「尚未添加流程」（走语言键）",
+                    input.contains("projector.msg.seq_empty"));
+            check("有流程时走服务端权威的 seqPlay",
+                    input.contains("\"seqPlay\""));
+            check("没选中平面时不动手（I 仍归网页输入）",
+                    input.contains("plane == null || mc.player == null"));
+            check("I 键优先级写死：选中平面时不给网页输入让路（避免一次按键两个响应）",
+                    input.contains("SelectionState.plane() == null"));
+            String zh = new String(Files.readAllBytes(Path.of(
+                    "src/main/resources/assets/projector/lang/zh_cn.json")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("中文语言文件里有「尚未添加流程」", zh.contains("尚未添加流程"));
+        } catch (Exception e) {
+            check("读不到输入/I 键源码：" + e, false);
+        }
+
+        // ⑪ 本地音乐必须进哈希索引（否则重启后播放键失灵：要重新选歌才恢复）
+        try {
+            String local = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/media/LocalMedia.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("扫描根目录包含音乐目录（musicDir）", local.contains("roots.add(musicDir());"));
+            check("扫描放行音频扩展名（mp3/flac/wav/m4a/aac）",
+                    local.contains("AUDIO_EXT") && local.contains("\"mp3\"") && local.contains("\"flac\""));
+            check("音频标成「不进图片/视频列表」（复用 video 位）",
+                    local.contains("if (audio) video = true;"));
+        } catch (Exception e) {
+            check("读不到 LocalMedia 源码：" + e, false);
+        }
+
+        // ⑫ 两套「中心」的语义不许再被改坏（本轮把 rotX 改成局部值，导致音乐标题/时间整体偏移）
+        try {
+            String widget = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/common/widget/Widget.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("rotX/rotY 是**画布**中心（x + w/2）—— drawInBox 的轴心要的就是它",
+                    widget.contains("return x + w / 2.0;") && widget.contains("return y + h / 2.0;"));
+            check("另有 localRotX/localRotY 给局部↔画布换算用",
+                    widget.contains("public double localRotX()") && widget.contains("public double localRotY()"));
+            check("rotPt 用局部轴心换算", widget.contains("rotAround(localRotX(), localRotY(), rot, lx, ly)"));
+            String renderer = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/render/WidgetRenderer.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("棋类的 drawInBox 用画布中心当轴心（不是局部）",
+                    renderer.contains("w.rot, w.alpha, dPiece, w.rotX(), w.rotY());"));
+        } catch (Exception e) {
+            check("读不到 Widget/渲染源码：" + e, false);
+        }
+
+        // ⑬ 键位说明必须与绑定一致（「取消圈选 (I)」那句错了很久）
+        try {
+            String zh = new String(Files.readAllBytes(Path.of(
+                    "src/main/resources/assets/projector/lang/zh_cn.json")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String keys = new String(Files.readAllBytes(Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/ProjectorKeys.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            check("取消圈选绑定的是 Esc（不是 I）", keys.contains("InputConstants.KEY_ESCAPE"));
+            check("中文键位说明写的是 Esc（与绑定一致）",
+                    zh.contains("\"key.projector.cancel\": \"取消圈选 (Esc)\""));
+            check("中文键位说明不再声称 cancel 是 I)",
+                    !zh.contains("取消圈选 (I)"));
+        } catch (Exception e) {
+            check("读不到键位/语言文件：" + e, false);
+        }
+
+        // ⑬ 未旋转时的夹取行为与老实现一致（不许把没旋转的控件弄丢）
+        w.rot = 0;
+        double[] c0r = top.hmjmfabc.projector.client.gui.CanvasWidgetView
+                .clampPos(w, 999, 999, 64, 64);
+        check("未旋转：右下夹取 = 画布内（与老行为一致）",
+                c0r[0] <= 64 - 20 * 0.5 + 1.0e-6 && c0r[1] <= 64 - 10 * 0.5 + 1.0e-6);
     }
 
     // ------------------------------------------------------------------ 存档

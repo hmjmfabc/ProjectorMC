@@ -111,18 +111,66 @@ public class CanvasWidgetView extends AbstractWidget {
      * <p>允许最多 25% 伸出画布（或至少 8 单位），但控件必须有相当一部分在画布内 ——
      * 否则玩家一不小心就会把它拖到画布外几百单位处，从此在世界里再也看不到，
      * 表现出来就是「控件消失 / 尺寸看着不对」。</p>
+     *
+     * <p>⚠ <b>【27.2.1-hotfix-144】夹的是「绕中心旋转之后」的包围盒。</b>
+     * 老实现用未旋转的 {@code w/h} 当尺寸，而控件是绕中心转的：
+     * 转 180° 后它实际占的是中心**左侧**那一片，夹取却还以为它从 {@code x} 往右长 ⇒
+     * 往右拖时 {@code x} 被夹在 {@code cw - w/2}，画面上控件却还在左边 ⇒
+     * 玩家感觉「拖不过去、卡住了」（用户报的就是这个，180° 时最明显）。</p>
      */
-    public static double[] clampPos(double x, double y, double w, double h, int canvasW, int canvasH) {
+    public static double[] clampPos(Widget w, double x, double y, int canvasW, int canvasH) {
         if (!Double.isFinite(x) || !Double.isFinite(y)) {
             return new double[]{0, 0};
         }
         double cw = Math.max(1, canvasW);
         double ch = Math.max(1, canvasH);
-        double slackX = Math.max(8.0, Math.min(w, cw) * 0.25);
-        double slackY = Math.max(8.0, Math.min(h, ch) * 0.25);
-        double nx = Math.max(-slackX, Math.min(cw - Math.min(w, cw) * 0.5, x));
-        double ny = Math.max(-slackY, Math.min(ch - Math.min(h, ch) * 0.5, y));
+
+        // 旋转后的实际占位（轴对齐包围盒）
+        double[] box = rotatedAabbAt(w, x, y);
+        double bw = Math.max(1.0e-3, box[2] - box[0]);
+        double bh = Math.max(1.0e-3, box[3] - box[1]);
+        // 包围盒相对控件左下角的偏移（旋转后可能为负）
+        double lox = box[0] - x;
+        double loy = box[1] - y;
+
+        // 允许的伸出量：包围盒的 25%。
+        // 【27.2.4-200 修】原先还取了「至少 8 单位」的下限，而下面一句注释写的是
+        // 「包围盒必须留至少一半在画布内」—— 对小于 16 单位的控件，8 单位的下限比它一半还大，
+        // 于是能被整个拖出画布（缩略图里既看不见也点不中）。去掉这个下限，与注释口径一致。
+        double slackX = Math.min(bw, cw) * 0.25;
+        double slackY = Math.min(bh, ch) * 0.25;
+
+        // 包围盒必须留至少一半在画布内；包围盒比画布还大时居中
+        double nx;
+        if (bw >= cw) {
+            nx = (cw - bw) / 2.0 - lox;
+        } else {
+            double min = -slackX - lox;
+            double max = cw - bw * 0.5 - lox;
+            nx = Math.max(min, Math.min(max, x));
+        }
+        double ny;
+        if (bh >= ch) {
+            ny = (ch - bh) / 2.0 - loy;
+        } else {
+            double min = -slackY - loy;
+            double max = ch - bh * 0.5 - loy;
+            ny = Math.max(min, Math.min(max, y));
+        }
         return new double[]{nx, ny};
+    }
+
+    /** 假如控件放在 {@code (x, y)}，它**旋转后**的轴对齐包围盒长什么样。 */
+    private static double[] rotatedAabbAt(Widget w, double x, double y) {
+        double copyX = w.x, copyY = w.y;
+        try {
+            w.x = x;
+            w.y = y;
+            return w.rotatedAabb();
+        } finally {
+            w.x = copyX;      // 一定要还原：这是运行期对象，不是副本
+            w.y = copyY;
+        }
     }
 
     /** 屏幕坐标 -> 画布坐标。 */
@@ -189,20 +237,42 @@ public class CanvasWidgetView extends AbstractWidget {
     }
 
     private void drawWidget(GuiGraphics gfx, Widget w, boolean isSelected) {
-        double[] aabb = SelectionRenderer.widgetAabb(w);
-        double[] p0 = toScreen(aabb[0], aabb[3]);
-        double[] p1 = toScreen(aabb[2], aabb[1]);
-        int x0 = (int) Math.floor(p0[0]);
-        int y0 = (int) Math.floor(p0[1]);
-        int x1 = (int) Math.ceil(p1[0]);
-        int y1 = (int) Math.ceil(p1[1]);
+        // 【27.2.1-hotfix-144】预览里也必须**画成旋转后的样子**。
+        //   以前这里是「取旋转后的包围盒 → 画一个轴对齐矩形」，所以玩家看到的
+        //   是一个「稍有变形的未旋转矩形」（玩家原话）。
+        //   现在：控件本体用 pose 旋转后画（fill 会跟着 pose 变换），
+        //   只有贴图缩略图仍然用它的包围盒（省事且够用 —— 它的边界就是包围盒）。
+        double[] aabb = w.rotatedAabb();
+        // 贴图缩略图用的屏幕范围（旋转后的包围盒）
+        double[] q0 = toScreen(aabb[0], aabb[3]);
+        double[] q1 = toScreen(aabb[2], aabb[1]);
+        int tx0 = (int) Math.floor(q0[0]);
+        int ty0 = (int) Math.floor(q0[1]);
+        int tx1 = (int) Math.ceil(q1[0]);
+        int ty1 = (int) Math.ceil(q1[1]);
+
+        // 控件本体：屏幕左上角 + 屏幕尺寸（画布 y 轴向上 ⇒ 高度取负、上边 = 画布 y+h）
+        double[] topLeft = toScreen(w.x, w.y + w.h);
+        double[] bottomRight = toScreen(w.x + w.w, w.y);
+        double sw = bottomRight[0] - topLeft[0];        // 屏幕宽（正）
+        double sh = bottomRight[1] - topLeft[1];        // 屏幕高（正）
+        if (Math.abs(sw) < 1.0) sw = 1.0;
+        if (Math.abs(sh) < 1.0) sh = 1.0;
+        int x0 = (int) Math.floor(topLeft[0]);
+        int y0 = (int) Math.floor(topLeft[1]);
+        int x1 = (int) Math.ceil(topLeft[0] + sw);
+        int y1 = (int) Math.ceil(topLeft[1] + sh);
         if (x1 <= x0) x1 = x0 + 1;
         if (y1 <= y0) y1 = y0 + 1;
+        final double cx = topLeft[0] + sw / 2.0;
+        final double cy = topLeft[1] + sh / 2.0;
 
         // 图片/视频：直接把素材贴图画进预览。
         // 预选用的是 GUI 渲染管线（与世界中那条完全不同），所以它顺带是一个排查工具：
         // 预览里有图、世界里没有 -> 世界渲染问题；两边都没有 -> 纹理本身没就绪。
-        boolean drewMedia = drawMediaThumb(gfx, w, x0, y0, x1, y1);
+        // （缩略图用旋转后的包围盒，不跟控件本体一样转 —— 它只是一张示意贴图）
+        boolean drewMedia = tx1 > tx0 && ty1 > ty0
+                && drawMediaThumb(gfx, w, tx0, ty0, tx1, ty1);
 
         int fill = switch (w.kind()) {
             case Widget.KIND_TEXT -> 0x5533AAFF;
@@ -216,23 +286,36 @@ public class CanvasWidgetView extends AbstractWidget {
             case Widget.KIND_WEB -> 0x5533E0D0;
             default -> 0x55FFFFFF;
         };
-        gfx.fill(x0, y0, x1, y1, fill);
         if (drewMedia) {
             // 已经有真实素材了，背景色只留很淡的一层，别盖住图
             fill = (fill & 0x00FFFFFF) | 0x22000000;
         }
         int border = isSelected ? 0xFFFFD54A : 0x80FFFFFF;
-        gfx.fill(x0, y0, x1, y0 + 1, border);
-        gfx.fill(x0, y1 - 1, x1, y1, border);
-        gfx.fill(x0, y0, x0 + 1, y1, border);
-        gfx.fill(x1 - 1, y0, x1, y1, border);
 
-        if (isSelected && editable) {
-            // 右下角缩放手柄
-            gfx.fill(x1 - 4, y1 - 4, x1, y1, 0xFFFFD54A);
-        }
-        if (w == dragging) {
-            gfx.fill(x0, y0, x1, y1, 0x33FFFFFF);
+        // ---- 以下全部在「绕控件中心旋转」的 pose 里画 ----
+        var pose = gfx.pose();
+        pose.pushPose();
+        try {
+            pose.translate(cx, cy, 0.0);
+            // 屏幕 y 向下、画布旋转是逆时针（数学正向）⇒ 屏幕上要取负角
+            pose.mulPose(new org.joml.Quaternionf()
+                    .rotationZ((float) Math.toRadians(-w.rot)));
+            pose.translate(-cx, -cy, 0.0);
+
+            gfx.fill(x0, y0, x1, y1, fill);
+            gfx.fill(x0, y0, x1, y0 + 1, border);
+            gfx.fill(x0, y1 - 1, x1, y1, border);
+            gfx.fill(x0, y0, x0 + 1, y1, border);
+            gfx.fill(x1 - 1, y0, x1, y1, border);
+            if (isSelected && editable) {
+                // 右下角缩放手柄（跟着旋转走，所以玩家看到的角就是能拉的那个角）
+                gfx.fill(x1 - 4, y1 - 4, x1, y1, 0xFFFFD54A);
+            }
+            if (w == dragging) {
+                gfx.fill(x0, y0, x1, y1, 0x33FFFFFF);
+            }
+        } finally {
+            pose.popPose();      // 必须还原：否则后面所有控件与网格都会跟着转
         }
     }
 
@@ -316,8 +399,11 @@ public class CanvasWidgetView extends AbstractWidget {
         listener.onSelected(hit);
         if (!editable) return;
 
-        double[] aabb = SelectionRenderer.widgetAabb(hit);
-        double[] handle = toScreen(aabb[2], aabb[1]);
+        // 【27.2.4-200 修】手柄画在「控件右下角随控件一起旋转后的位置」（见下面的 pose 块），
+        // 而这里以前拿的是**旋转后包围盒**的角 —— 控件一转，看到的角与能抓的角就不是同一个点。
+        // 现在两边同源：都用控件自身右下角（局部 (w, 0)）绕中心旋转后的画布点。
+        double[] hp = hit.rotPt(hit.w, 0);
+        double[] handle = toScreen(hp[0], hp[1]);
         resizeMode = Math.abs(mouseX - handle[0]) < 6 && Math.abs(mouseY - handle[1]) < 6;
         dragging = hit;
         dragStartCanvasX = c[0];

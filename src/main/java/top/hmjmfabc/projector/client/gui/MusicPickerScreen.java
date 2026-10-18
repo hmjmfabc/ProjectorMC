@@ -63,12 +63,29 @@ public class MusicPickerScreen extends ProjectorScreen {
 
     public MusicPickerScreen(Screen parent, Plane plane, @Nullable Widget target,
                              Consumer<MusicTrack> onPick) {
+        this(parent, plane, target, onPick,
+                target instanceof MusicWidget music ? music : null);
+    }
+
+    /**
+     * @param playlistOwner 「播放列表」按钮作用在哪个音乐控件上。
+     *                      <b>不能</b>直接用 {@code target}：从播放列表界面打开本界面时
+     *                      {@code target} 传的是 null（否则「什么都没选就关掉」会把控件删掉），
+     *                      但那时播放列表按钮仍然要能用。
+     */
+    public MusicPickerScreen(Screen parent, Plane plane, @Nullable Widget target,
+                             Consumer<MusicTrack> onPick, @Nullable MusicWidget playlistOwner) {
         super(Component.literal("选择音乐"));
         this.parent = parent;
         this.plane = plane;
         this.target = target;
         this.onPick = onPick;
+        this.playlistOwner = playlistOwner;
     }
+
+    /** 「播放列表」按钮作用在哪个控件（null = 本界面不显示这个按钮）。 */
+    @Nullable
+    private final MusicWidget playlistOwner;
 
     @Override
     protected void init() {
@@ -88,23 +105,52 @@ public class MusicPickerScreen extends ProjectorScreen {
         queryBox = editBox(rx, pad + 22, rw, 18, "", 256, null);
         queryBox.setHint(Component.literal("歌名关键字 / 歌曲ID / 分享链接"));
 
+        // 【27.2.2-154】右栏按钮：**最常用的排最上面**，而且每一行都先问「放得下吗」——
+        // 本文件的老教训：屏幕一矮，排在最后的按钮会跑到面板外，与底部那排按钮重叠
+        // （原版按 children 顺序命中，先加的会把后加的点击全部吃掉）。
+        // 所以最不重要的「打开音乐目录」排在最后、允许被省略；
+        // 而「登录网易云」「播放列表」是玩家点名要的入口，排在最前面，永远看得见。
+        final int rowBottom = this.height - pad - 28;   // 底部那排按钮的上沿
         int by = pad + 46;
-        button("搜索网易云", rx, by, rw, 20, b -> doSearch());
-        by += 24;
-        button("用 ID / 链接添加", rx, by, rw, 20, b -> addById());
-        by += 24;
-        button(showSearch ? "显示本地音乐" : "显示搜索结果", rx, by, rw, 20, b -> {
-            showSearch = !showSearch;
-            rebuildWidgets();
-        });
-        by += 24;
-        button("重新扫描本地", rx, by, rw, 20, b -> {
-            scanLocalAsync();
-            showSearch = false;
-            rebuildWidgets();
-        });
-        by += 24;
-        button("打开音乐目录", rx, by, rw, 20, b -> LocalMedia.ensureDirectories());
+        if (by + 20 <= rowBottom) {
+            // 登录状态直接写在按钮上 —— 玩家不用点进去才知道自己登没登录
+            button(WidgetEditorScreen.loginLabel(), rx, by, rw, 20, b ->
+                    Minecraft.getInstance().setScreen(new top.hmjmfabc.projector.compat
+                            .betterlogin.client.gui.LoginScreen(this)));
+            by += 24;
+        }
+        if (playlistOwner != null && by + 20 <= rowBottom) {
+            button("播放列表：" + playlistOwner.describePlaylist(), rx, by, rw, 20,
+                    b -> Minecraft.getInstance().setScreen(
+                            new MusicPlaylistScreen(this, plane, playlistOwner)));
+            by += 24;
+        }
+        if (by + 20 <= rowBottom) {
+            button("搜索网易云", rx, by, rw, 20, b -> doSearch());
+            by += 24;
+        }
+        if (by + 20 <= rowBottom) {
+            button("用 ID / 链接添加", rx, by, rw, 20, b -> addById());
+            by += 24;
+        }
+        if (by + 20 <= rowBottom) {
+            button(showSearch ? "显示本地音乐" : "显示搜索结果", rx, by, rw, 20, b -> {
+                showSearch = !showSearch;
+                rebuildWidgets();
+            });
+            by += 24;
+        }
+        if (by + 20 <= rowBottom) {
+            button("重新扫描本地", rx, by, rw, 20, b -> {
+                scanLocalAsync();
+                showSearch = false;
+                rebuildWidgets();
+            });
+            by += 24;
+        }
+        if (by + 20 <= rowBottom) {
+            button("打开音乐目录", rx, by, rw, 20, b -> LocalMedia.ensureDirectories());
+        }
 
         button("取消", pad, this.height - pad - 24, listW / 2 - 4, 20, b -> onClose());
         button("返回编辑器", pad + listW / 2 + 4, this.height - pad - 24, listW / 2 - 4, 20,
@@ -274,11 +320,25 @@ public class MusicPickerScreen extends ProjectorScreen {
         }
         // 【27.2】用 key 打开：哈希 key 走「本地索引 / 下载缓存」，路径 key 走文件查找
         MusicTrack track = MusicTrack.local(key, "", 0L);
+        // 【27.2.1-hotfix-144】本地文件就在磁盘上 ⇒ **穷举读一遍**拿准确时长。
+        // 以前只走「元数据 + 码率估算」，而那条链上有个错分支把 2:40 量成了 0:13
+        // （玩家报的就是这个）。穷举读几 MB 只要几十毫秒，结果就是真值。
+        long exact = 0L;
+        try (java.io.InputStream raw = track.openStream()) {
+            exact = top.hmjmfabc.projector.client.music.AudioDecoder.probeDurationMsExact(raw, bytes);
+        } catch (Throwable t) {
+            Projector.LOGGER.debug("[Projector][音乐] 穷举量时长失败 {}：{}", track.key(), t.toString());
+        }
+        if (exact > 0) {
+            Projector.LOGGER.info("[Projector][音乐] 量时长（穷举）{}：{}ms（{} 字节）",
+                    track.key(), exact, bytes);
+            return exact;
+        }
         try (java.io.InputStream raw = track.openStream();
              javax.sound.sampled.AudioInputStream pcm =
                      top.hmjmfabc.projector.client.music.AudioDecoder.open(raw)) {
             long ms = top.hmjmfabc.projector.client.music.AudioDecoder.probeDurationMs(pcm, bytes);
-            Projector.LOGGER.info("[Projector][音乐] 量时长 {}：{}ms（{} 字节，{} Hz，帧数={}）",
+            Projector.LOGGER.info("[Projector][音乐] 量时长（估算）{}：{}ms（{} 字节，{} Hz，帧数={}）",
                     track.key(), ms, bytes, (int) pcm.getFormat().getSampleRate(), pcm.getFrameLength());
             return ms;
         } catch (Throwable t) {

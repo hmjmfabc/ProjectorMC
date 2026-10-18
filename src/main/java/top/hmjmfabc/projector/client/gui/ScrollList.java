@@ -27,6 +27,14 @@ public class ScrollList<T> extends AbstractWidget {
 
     private int scroll;
     private T hovered;
+    /**
+     * 【27.2.2】外部指定的「当前选中行」（-1 = 没有）。
+     *
+     * <p>播放列表需要它：右侧的「上移 / 下移 / 移除 / 播放」四个按钮都要作用在
+     * **选中的那一行**上。以前只有 hover 高亮，触屏上手指一松高亮就没了，
+     * 玩家根本看不出「现在操作的是哪一首」。</p>
+     */
+    private int selected = -1;
 
     public ScrollList(int x, int y, int width, int height,
                       Function<T, String> primary, Function<T, String> secondary,
@@ -49,6 +57,15 @@ public class ScrollList<T> extends AbstractWidget {
 
     public T hovered() {
         return hovered;
+    }
+
+    /** 高亮第 index 行（-1 = 不高亮）。 */
+    public void setSelected(int index) {
+        this.selected = index;
+    }
+
+    public int selected() {
+        return selected;
     }
 
     private int visibleRows() {
@@ -76,6 +93,11 @@ public class ScrollList<T> extends AbstractWidget {
             int y = getY() + i * itemHeight;
             boolean over = mouseX >= getX() && mouseX < getX() + getWidth()
                     && mouseY >= y && mouseY < y + itemHeight;
+            // 选中行先铺底色（比 hover 更明显）：hover 只是「手指在上面」，
+            // 选中才是「按钮会作用在这一行」。
+            if (idx == selected) {
+                gfx.fill(getX(), y, getX() + getWidth(), y + itemHeight, 0x663A6EA5);
+            }
             if (over) {
                 hovered = item;
                 gfx.fill(getX(), y, getX() + getWidth(), y + itemHeight, 0x40FFFFFF);

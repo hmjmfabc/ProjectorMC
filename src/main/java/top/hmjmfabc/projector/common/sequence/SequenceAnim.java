@@ -350,7 +350,10 @@ public final class SequenceAnim {
     private static State slideOffset(double angleDeg, double distance, double scale,
                                      double alpha, double rot) {
         double rad = Math.toRadians(angleDeg);
-        return new State(true, Math.cos(rad) * distance, Math.sin(rad) * distance, 0,
+        // 【27.2.4-200 修】x 取负：0° 在界面上标的是「从左（滑入）」，
+        // 而 canvas +x = 面的 right()（观众右手边）。以前用 +cos ⇒ 0° 的控件从右边进场，
+        // 与界面文字完全相反（180° 同理）。
+        return new State(true, -Math.cos(rad) * distance, Math.sin(rad) * distance, 0,
                 scale, alpha, rot);
     }
 

@@ -50,6 +50,10 @@ public final class ProjectorClient {
         // 【27.1.1】音乐控件的每 tick 调度（该不该出声、续播、音量跟随）
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.client.event.ClientTickEvent.Post event) ->
                 top.hmjmfabc.projector.client.music.MusicManager.tick());
+        // 【27.2.2】登录命令：客户端侧 /nmbl login 在这里注册；
+        // 服务端侧 /nmbl server … 由公共侧（Projector 构造）注册 —— 见 BetterLoginBridge 的说明。
+        NeoForge.EVENT_BUS.addListener(
+                top.hmjmfabc.projector.compat.betterlogin.client.ClientCommandBridge::onRegisterClientCommands);
     }
 
     private void clientSetup(FMLClientSetupEvent event) {
@@ -62,9 +66,45 @@ public final class ProjectorClient {
             FontManager.loadBuiltins();
             top.hmjmfabc.projector.client.render.TextRenderer.clearCache();
             registerWhiteTexture();
+            registerGlowTexture();
             verifyAtlasTexture();
+            migrateStaleKeyBindings();
+            // 【27.2.2】并入投影仪的「网易云登录（Better Login，MIT）」：
+            // 客户端初始化一次；命令在下面两条事件里注册（客户端命令 + 服务端命令）。
+            top.hmjmfabc.projector.compat.betterlogin.BetterLoginBridge.init();
             Projector.LOGGER.info("[Projector] 客户端就绪（字体 {} 个）", FontManager.count());
         });
+    }
+
+    /**
+     * 【27.2.1-hotfix-144】把**存档里残留的旧按键绑定**迁到新默认值。
+     *
+     * <h2>为什么必须有这一步</h2>
+     * Minecraft 把按键绑定写进 {@code options.txt}，而**存档里的值优先于代码里的新默认值**。
+     * ⑥.3 把「取消圈选」的默认键从 I 改成 Esc，但玩家 {@code options.txt} 里那句
+     * {@code key_key.projector.cancel:key.keyboard.i} 一直留着 —— 于是：
+     * 游戏里显示的是新的语言标签（改成 Esc 之前显示的是「取消圈选 (I)」），
+     * 而**实际绑的还是 I** ⇒ 玩家按 I 会取消圈选，怎么改代码都「修不掉」。
+     *
+     * <p>这里只在「确实是那个旧默认值」时迁移（I 号键 = 73），不动玩家自己改过的绑定，
+     * 并且只在 I 已经被本模组「重播流程」占用时才迁移（否则未来改了默认键又会误伤）。</p>
+     */
+    private static void migrateStaleKeyBindings() {
+        try {
+            var cancel = top.hmjmfabc.projector.client.ProjectorKeys.KEY_CANCEL;
+            var replay = top.hmjmfabc.projector.client.ProjectorKeys.KEY_SEQ_REPLAY;
+            boolean cancelOnOldDefault = cancel.getKey().getValue() == 73;   // 73 = GLFW_KEY_I
+            boolean replayTookOldKey = replay.getKey().getValue() == 73;
+            if (cancelOnOldDefault && replayTookOldKey) {
+                cancel.setKey(com.mojang.blaze3d.platform.InputConstants.getKey(
+                        "key.keyboard.escape"));
+                Projector.LOGGER.warn("[Projector] 按键迁移：把「取消圈选」从旧默认键 I 改回 Esc"
+                        + "（I 现在用于「重播流程」；options.txt 里的旧绑定会覆盖代码里的新默认值，"
+                        + "所以这一步必须做，否则按 I 会取消圈选）");
+            }
+        } catch (Throwable t) {
+            Projector.LOGGER.debug("[Projector] 按键迁移跳过：{}", String.valueOf(t));
+        }
     }
 
     /**
@@ -78,32 +118,24 @@ public final class ProjectorClient {
         top.hmjmfabc.projector.common.platform.MediaMeta.setProber(path -> {
             try {
                 String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
-                boolean video = name.endsWith(".mjpg") || name.endsWith(".mjpeg")
-                        || name.endsWith(".avi") || name.endsWith(".mov")
-                        || name.endsWith(".mp4") || name.endsWith(".webm")
-                        || name.endsWith(".zip");
+                // 【27.2.4-201】视频只认外部解码器（WaterMedia）能放的容器：
+                // mjpg / mjpeg / zip 这些内置帧序列格式已随 Build 112 的内置解码器下线，
+                // 在这里就当作「不是视频」，绝不再退回逐帧解码。
+                boolean video = name.endsWith(".avi") || name.endsWith(".mov")
+                        || name.endsWith(".mp4") || name.endsWith(".m4v")
+                        || name.endsWith(".webm") || name.endsWith(".mkv")
+                        || name.endsWith(".flv") || name.endsWith(".wmv")
+                        || name.endsWith(".3gp") || name.endsWith(".mpg")
+                        || name.endsWith(".mpeg");
                 if (video) {
-                    // 【27.1.2】统一入口：内置解得了就用内置；解不了但在外部解码器射程内，
-                    // 就只读容器头拿宽高（画面比例才不会错），帧数交给它自己管。
-                    String bare = path.getFileName().toString();
-                    if (!top.hmjmfabc.projector.client.media.LocalMedia.extension(bare)
-                            .matches("mjpg|mjpeg|zip")) {
-                        var ext = top.hmjmfabc.projector.client.media.MediaUploader.probeVideo(path);
-                        if (ext != null) {
-                            return new top.hmjmfabc.projector.common.platform.MediaMeta(
-                                    ext.width(), ext.height(), Math.max(1, ext.frames()),
-                                    ext.fpsOrDefault());
-                        }
-                        return top.hmjmfabc.projector.common.platform.MediaMeta.empty();
+                    // 统一入口：只读容器头拿宽高（画面比例才不会错），帧数交给解码器自己管。
+                    var ext = top.hmjmfabc.projector.client.media.MediaUploader.probeVideo(path);
+                    if (ext != null) {
+                        return new top.hmjmfabc.projector.common.platform.MediaMeta(
+                                ext.width(), ext.height(), Math.max(1, ext.frames()),
+                                ext.fpsOrDefault());
                     }
-                    var src = top.hmjmfabc.projector.client.media.VideoSource.open(path);
-                    if (src == null) {
-                        return top.hmjmfabc.projector.common.platform.MediaMeta.empty();
-                    }
-                    var meta = new top.hmjmfabc.projector.common.platform.MediaMeta(
-                            src.width, src.height, src.frameCount, 10);
-                    src.close();
-                    return meta;
+                    return top.hmjmfabc.projector.common.platform.MediaMeta.empty();
                 }
                 byte[] data = java.nio.file.Files.readAllBytes(path);
                 int[] size = top.hmjmfabc.projector.client.media.ImageCodec.size(data, 0, data.length);
@@ -156,6 +188,45 @@ public final class ProjectorClient {
             WidgetRenderer.WHITE = WHITE_TEXTURE;
         } catch (Exception ex) {
             Projector.LOGGER.warn("[Projector] 生成白色纹理失败: {}", ex.toString());
+        }
+    }
+
+    /** 【27.2.2】展示框光球用的「径向渐变白色光斑」纹理坐标。 */
+    public static final ResourceLocation GLOW_TEXTURE = Projector.id("dynamic/glow");
+
+    /**
+     * 【27.2.2】生成 32×32 的径向渐变光斑（中心白、边缘透明），给展示框的光球用。
+     *
+     * <p>为什么不用「叠几层小方块」凑一个圆：那在墙上是一圈套一圈的方框，很难看。
+     * 一张 32×32 的贴图只占 4 KB，而且整个光球只要 <b>一个四边形</b>
+     * （对比：用方块凑圆至少 8 个），对安卓的绘制开销也友好。</p>
+     *
+     * <p>像素值沿用字形图集那一套：<b>高字节是 alpha</b>、低 24 位是白色
+     * （{@code NativeImage} 的打包顺序是 ABGR，R=G=B 时两种解释结果一致，
+     * 所以这里不会踩通道顺序的坑）。</p>
+     */
+    private static void registerGlowTexture() {
+        try {
+            final int size = 32;
+            com.mojang.blaze3d.platform.NativeImage img =
+                    new com.mojang.blaze3d.platform.NativeImage(size, size, false);
+            double half = (size - 1) / 2.0;
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    double dx = (x - half) / half;
+                    double dy = (y - half) / half;
+                    double r = Math.min(1.0, Math.sqrt(dx * dx + dy * dy));
+                    // 1 - r^2 的平方：中心实、边缘软，看起来像一团光而不是一个圆盘
+                    double f = 1.0 - r * r;
+                    int a = (int) Math.round(255.0 * f * f);
+                    img.setPixelRGBA(x, y, (a << 24) | 0x00FFFFFF);
+                }
+            }
+            Minecraft.getInstance().getTextureManager().register(GLOW_TEXTURE, new DynamicTexture(img));
+            top.hmjmfabc.projector.client.render.ItemWidgetRenderer.GLOW = GLOW_TEXTURE;
+        } catch (Throwable ex) {
+            // 装饰性纹理：失败也不能影响启动（安卓上 GL 相关异常有可能是 Error）
+            Projector.LOGGER.warn("[Projector] 生成光斑纹理失败（展示框光球将不显示）: {}", ex.toString());
         }
     }
 

@@ -37,6 +37,37 @@ import java.util.regex.Pattern;
  * <p>所有网络调用都在**工作线程**执行，绝不在渲染/主线程里调用。</p>
  */
 public final class NetEaseApi {
+    /**
+     * 【27.2.2】与网络音乐机同名的常量（{@code MusicPlayManager.MUSIC_163_URL}）：
+     * 「这首是网易云直链」的判据。附属的解析器会 {@code import static} 它。
+     */
+    public static final String MUSIC_163_URL = "https://music.163.com/";
+
+    /**
+     * 【27.2.2】外部解析器（VIP 登录等）预先解析好的地址：{@code 歌曲键 → 直链}。
+     * <p>为什么要有它：走「附属」拿高码率是**异步**的（要联网），而开流是同步的。
+     * 所以播放开始时先在后台问一遍解析器（{@code MusicManager.prepareAddonResolve}），
+     * 拿到就记在这里；{@link MusicTrack#playUrl()} 优先用它，没有才回落到内置外链。</p>
+     */
+    private static final java.util.Map<String, String> RESOLVED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 记下一个「外部解析器给的直链」。 */
+    public static void putResolved(String key, String url) {
+        if (key == null || key.isEmpty() || url == null || url.isEmpty()) return;
+        RESOLVED.put(key, url);
+    }
+
+    /** 取外部解析器给的直链（没有返回 null）。 */
+    public static String resolved(String key) {
+        return key == null ? null : RESOLVED.get(key);
+    }
+
+    /** 清掉某首歌的解析结果（换歌/失败重来时用）。 */
+    public static void clearResolved(String key) {
+        if (key != null) RESOLVED.remove(key);
+    }
+
     private NetEaseApi() {
     }
 

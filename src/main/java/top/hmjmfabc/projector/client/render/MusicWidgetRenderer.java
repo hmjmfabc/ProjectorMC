@@ -42,10 +42,13 @@ public final class MusicWidgetRenderer {
         }
         long gameTime = WidgetRenderer.currentGameTime();
         double corner = Math.max(0, Math.min(w.corner, Math.min(w.w, w.h) * 0.5));
-        double x0 = w.x;
-        double y0 = w.y;
-        double x1 = w.x + w.w;
-        double y1 = w.y + w.h;
+        // ⚠ 这四个是**控件局部坐标**（相对左下角）：本文件所有绘制原语的入参约定都是局部坐标，
+        //   由原语内部统一做「绕中心旋转」（以前是减左下角，27.2.1-hotfix-144 改成减半宽/半高）。
+        //   传画布坐标进来会让整个原语平移半个控件 —— 玩家报的「边框/播放键/进度偏移」就是这个。
+        double x0 = 0;
+        double y0 = 0;
+        double x1 = w.w;
+        double y1 = w.h;
 
         // 各层沿法线依次错开，避免共面闪烁（底色 → 边框 → 波形 → 播放键 → 文字）
         PlaneRenderContext bgCtx = layer(ctx, 0);
@@ -69,7 +72,9 @@ public final class MusicWidgetRenderer {
         drawButton(collector, btnCtx, w, gameTime);
 
         // ④ 波形 + 文字（上半行放文字、下半行放竖条；太扁时只画竖条）
-        double[] mid = offset(w, w.waveBox());
+        // ⚠ 从这里往下**一律用局部坐标**，画布坐标只在各绘制函数的内部（offset）做一次 ——
+        //   27.2.1-hotfix-144 的偏移 bug 就是「有的地方传局部、有的地方传画布」混出来的。
+        double[] mid = w.waveBox();
         double inner = Math.max(2.0, (mid[3] - mid[1]));
         double textH = Math.min(w.fontSize * 1.35, inner * 0.55);
         boolean bars = inner - textH >= 3.0;
@@ -89,7 +94,8 @@ public final class MusicWidgetRenderer {
 
     private static void drawButton(QuadCollector collector, PlaneRenderContext ctx, MusicWidget w,
                                    long gameTime) {
-        double[] box = offset(w, w.buttonBox());
+        // 局部坐标（原语内部会 offset + 绕中心旋转）
+        double[] box = w.buttonBox();
         double size = box[2] - box[0];
         double cx = (box[0] + box[2]) / 2;
         double cy = (box[1] + box[3]) / 2;
@@ -170,12 +176,19 @@ public final class MusicWidgetRenderer {
             return;
         }
         TtfFont font = FontManager.get(w.fontId);
+        // 入参是**控件局部坐标** ⇒ 这里统一转成画布坐标（唯一一次换算）
+        double[] c = offset(w, new double[]{tx0, ty0, tx1, ty1});
+        tx0 = c[0];
+        ty0 = c[1];
+        tx1 = c[2];
+        ty1 = c[3];
         // 单行显示：放不下就直接省略号截断（用户要求「只显示前面的字」）
         double size = w.fontSize;
         String oneLine = fitOneLine(font, text, size, tx1 - tx0);
         TextRenderer.drawInBox(collector, ctx, font, oneLine, size, -1, 1.0,
                 0, 1, tx0, ty0, tx1 - tx0, ty1 - ty0, w.rot, w.alpha, ctx.depth(),
-                w.x, w.y);
+                w.rotX(), w.rotY());
+        reportText(w, "标题", tx0, ty0, tx1, ty1);
     }
 
     /**
@@ -299,8 +312,38 @@ public final class MusicWidgetRenderer {
         double size = Math.max(4.0, w.fontSize * 0.92);
         TextRenderer.drawInBox(collector, ctx, font, fitOneLine(font, text, size, box[2] - box[0]),
                 size, -1, 1.0, 2, 1, box[0], box[1], box[2] - box[0], box[3] - box[1],
-                w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
+        reportText(w, "时间", box[0], box[1], box[2], box[3]);
     }
+
+    /**
+     * 【27.2.1-snapshot-150】把音乐控件两段文字的**方框与轴心**打进日志（内容变了才打）。
+     * <p>排查「标题/时间偏移」时的唯一真凭据：方框是**画布坐标**、轴心是**画布中心**，
+     * 两者与 {@code TextRenderer.drawInBox} 的约定一致才画得对。</p>
+     */
+    private static void reportText(MusicWidget w, String what, double x0, double y0, double x1, double y1) {
+        try {
+            String sig = String.format(java.util.Locale.ROOT, "%s|%.1f|%.1f|%.1f|%.1f|%.1f|%.1f|%.0f",
+                    what, x0, y0, x1, y1, w.x, w.y, w.rot);
+            if (sig.equals(LAST_TEXT_SIG.get(w.id))) {
+                return;
+            }
+            LAST_TEXT_SIG.put(w.id, sig);
+            top.hmjmfabc.projector.Projector.LOGGER.info(
+                    "[Projector][音乐] {}方框(画布)=({}, {})-({}, {})"
+                            + " 控件x/y=({}, {}) rot={}° 轴心(画布)=({}, {}) 框尺寸={}x{}",
+                    what, Math.round(x0), Math.round(y0), Math.round(x1), Math.round(y1),
+                    Math.round(w.x), Math.round(w.y), Math.round(w.rot),
+                    Math.round(w.rotX()), Math.round(w.rotY()),
+                    Math.round(x1 - x0), Math.round(y1 - y0));
+        } catch (Throwable ignored) {
+            // 诊断失败不影响渲染
+        }
+    }
+
+    /** 每控件上一次打过的文字方框签名（避免每帧刷屏）。 */
+    private static final java.util.Map<java.util.UUID, String> LAST_TEXT_SIG =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 有歌词就显示当前那一句，否则显示歌名。 */
     private static String titleText(Plane plane, MusicWidget w, long gameTime) {
@@ -370,10 +413,13 @@ public final class MusicWidgetRenderer {
         if ((argb >>> 24) == 0 || Math.abs(x1 - x0) < 1.0e-4 || Math.abs(y1 - y0) < 1.0e-4) {
             return;
         }
-        double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, x0 - w.x, y0 - w.y);
-        double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, x1 - w.x, y0 - w.y);
-        double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, x1 - w.x, y1 - w.y);
-        double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, x0 - w.x, y1 - w.y);
+        // ⚠ 入参是**控件局部坐标**（相对左下角）⇒ 相对轴心的偏移 = 局部值 − 半宽/半高。
+        //   27.2.1-hotfix-144 把轴心从「左下角」改成「中心」后，这里必须跟着减半宽/半高，
+        //   否则整个原语会平移半个控件（玩家报的「边框/播放键/进度偏移」就是这一处）。
+        double[] p0 = w.rotPt(x0, y0);
+        double[] p1 = w.rotPt(x1, y0);
+        double[] p2 = w.rotPt(x1, y1);
+        double[] p3 = w.rotPt(x0, y1);
         collector.setRenderType(QuadCollector.imageType(WidgetRenderer.WHITE));
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
@@ -386,9 +432,9 @@ public final class MusicWidgetRenderer {
         if ((argb >>> 24) == 0) {
             return;
         }
-        double[] pa = TextRenderer.rot(w.x, w.y, w.rot, ax - w.x, ay - w.y);
-        double[] pb = TextRenderer.rot(w.x, w.y, w.rot, bx - w.x, by - w.y);
-        double[] pc = TextRenderer.rot(w.x, w.y, w.rot, cx - w.x, cy - w.y);
+        double[] pa = w.rotPt(ax, ay);
+        double[] pb = w.rotPt(bx, by);
+        double[] pc = w.rotPt(cx, cy);
         collector.setRenderType(QuadCollector.imageType(WidgetRenderer.WHITE));
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 pa[0], pa[1], pb[0], pb[1], pc[0], pc[1], pc[0], pc[1],
@@ -584,10 +630,10 @@ public final class MusicWidgetRenderer {
         if ((argb >>> 24) == 0) {
             return;
         }
-        double[] pa = TextRenderer.rot(w.x, w.y, w.rot, ax - w.x, ay - w.y);
-        double[] pb = TextRenderer.rot(w.x, w.y, w.rot, bx - w.x, by - w.y);
-        double[] pc = TextRenderer.rot(w.x, w.y, w.rot, cx - w.x, cy - w.y);
-        double[] pd = TextRenderer.rot(w.x, w.y, w.rot, dx - w.x, dy - w.y);
+        double[] pa = w.rotPt(ax, ay);
+        double[] pb = w.rotPt(bx, by);
+        double[] pc = w.rotPt(cx, cy);
+        double[] pd = w.rotPt(dx, dy);
         collector.setRenderType(QuadCollector.imageType(WidgetRenderer.WHITE));
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 pa[0], pa[1], pb[0], pb[1], pc[0], pc[1], pd[0], pd[1],

@@ -206,8 +206,9 @@ public class T36 {
         SequenceAnim.State so1 = SequenceAnim.outEffect(SequenceAnim.ANIM_SLIDE, 1.0, 0, 40);
         check("出场滑动：一边滑走一边渐隐（alpha 1 → 0.5 → 0）",
                 nearly(so0.alpha(), 1) && nearly(so5.alpha(), 0.5) && so1.alpha() < 1.0e-6);
+        // 【27.2.4-200】0° = 「从左进场」⇒ 起手在 −x 侧，末了回到 0
         check("滑动仍然在动（渐显不是把位移吃掉了）",
-                nearly(sl0.dx(), 40) && nearly(sl0.dy(), 0) && nearly(sl1.dx(), 0));
+                nearly(sl0.dx(), -40) && nearly(sl0.dy(), 0) && nearly(sl1.dx(), 0));
 
         SequenceAnim.State rise0 = SequenceAnim.inEffect(SequenceAnim.ANIM_RISE, 0.0, 0, 40);
         check("从下方升起：起始 dy 为负（在下方），方向参数不参与",
@@ -215,8 +216,9 @@ public class T36 {
         SequenceAnim.State shk = SequenceAnim.inEffect(SequenceAnim.ANIM_SHAKE, 0.4, 0, 40);
         check("抖动进入：中途有横向偏移（dx ≠ 0）", Math.abs(shk.dx()) > 0.5);
 
-        check("滑动方向被真正使用：0° 沿 +x、90° 沿 +y",
-                nearly(SequenceAnim.inEffect(SequenceAnim.ANIM_SLIDE, 0.0, 0, 40).dx(), 40)
+        // 【27.2.4-200】0° 是「从左进场」⇒ 沿 −x；90° 仍是「从上」⇒ +y
+        check("滑动方向被真正使用：0° 沿 −x、90° 沿 +y",
+                nearly(SequenceAnim.inEffect(SequenceAnim.ANIM_SLIDE, 0.0, 0, 40).dx(), -40)
                         && nearly(SequenceAnim.inEffect(SequenceAnim.ANIM_SLIDE, 0.0, 90, 40).dy(), 40));
         check("未知编号一律「无」（不抛异常）",
                 SequenceAnim.inEffect(999, 0.3, 0, 40).isNormal()

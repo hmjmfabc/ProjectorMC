@@ -75,6 +75,16 @@ public final class GlyphAtlas {
      * @param pixels 单通道灰度像素，长度必须 ≥ w*h
      * @return 分配结果；图集已满时返回 null
      */
+    /**
+     * 【27.2.4-200】页数是否已经到上限。
+     *
+     * <p>「满了」只影响**新**字形能否排进去（已有字形照常可用），
+     * 调用方据此区分「这个码点画不出来」和「图集暂时没空间」—— 后者不该被永久拉黑。</p>
+     */
+    public boolean isFull() {
+        return pages.size() >= maxPages;
+    }
+
     public Slot allocate(int w, int h, ByteBuffer pixels) {
         if (w <= 0 || h <= 0 || w > pageSize || h > pageSize) {
             return null;

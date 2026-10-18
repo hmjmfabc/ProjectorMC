@@ -42,10 +42,13 @@ public class LeaderboardWidget extends Widget {
     public int scoreColor = 0xFF7FD4FF;
 
     /** 四部分各自的字体 ID（用户要求「分别更换字体」）。 */
-    public String titleFontId = Fonts.CAVIAR_DREAMS;
-    public String indexFontId = Fonts.CAVIAR_DREAMS;
-    public String nameFontId = Fonts.CAVIAR_DREAMS;
-    public String scoreFontId = Fonts.CAVIAR_DREAMS;
+    // 【27.2.4-200 修】四部分都改用 minecraft_ae：Caviar Dreams 没有中文字形，
+    // 而默认标题是「排行榜」、玩家名也常是中文 ⇒ 以前开箱即是一排缺字方块。
+    // （ClockWidget 早就是这么定的，这里只是把同一条规则补齐；玩家仍可逐项改字体。）
+    public String titleFontId = Fonts.MINECRAFT_AE;
+    public String indexFontId = Fonts.MINECRAFT_AE;
+    public String nameFontId = Fonts.MINECRAFT_AE;
+    public String scoreFontId = Fonts.MINECRAFT_AE;
 
     @Override
     public int kind() {

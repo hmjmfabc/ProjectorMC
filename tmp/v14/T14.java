@@ -187,9 +187,13 @@ public class T14 {
                     String.format("startSec %.2f -> %.2f", beforeStart, c.startSec));
         }
 
-        // ---------- 5. 翻页按钮：±30 秒、夹在 0~969 ----------
+        // ---------- 5. 翻页按钮：±30 秒、夹在动态上限 ----------
+        // 【27.2.2】可滚动范围不再是固定 969：上限 = 流程末尾 + 余量（dynamicMaxSec）。
+        // 这里用一条很长的片段把时间轴撑开，期望值从 SequenceTrack 现算，不写死数字。
+        double pageClamp = 0;
         {
-            SequenceClip c = clip(2, 5);
+            SequenceClip c = clip(0, 1000);
+            pageClamp = 0;
             TimelineBar bar = new TimelineBar(BAR_X, BAR_Y, BAR_W, BAR_H, planeWith(c), new Rec());
             bar.onClick(trackLeft() + 5, stripY());            // ◀
             chk("已在开头时点 ◀ 不动", windowOf(bar) == 0, "视窗=" + windowOf(bar));
@@ -198,9 +202,10 @@ public class T14 {
                     "视窗=" + windowOf(bar));
             bar.onClick(trackLeft() + 5, stripY());            // ◀
             chk("点 ◀ 退回开头", windowOf(bar) == 0, "视窗=" + windowOf(bar));
-            for (int i = 0; i < 60; i++) bar.onClick(trackRight() - 5, stripY());
-            chk("一直点 ▶ 会夹在最后（969 秒）", Math.abs(windowOf(bar) - 969) < 1e-6,
-                    "视窗=" + windowOf(bar));
+            for (int i = 0; i < 200; i++) bar.onClick(trackRight() - 5, stripY());
+            double maxStart = planeWith(c).sequence.dynamicMaxSec() - TimelineBar.VISIBLE_SEC;
+            chk("一直点 ▶ 会夹在动态上限", Math.abs(windowOf(bar) - maxStart) < 1e-6,
+                    String.format("视窗=%.1f（上限=%.1f）", windowOf(bar), maxStart));
         }
 
         // ---------- 6. 30 秒以后的长条：滚过去之后必须点得中（且时间不乱动） ----------
@@ -222,13 +227,14 @@ public class T14 {
 
         // ---------- 7. 底部控制条：滚动条拖动能滚、且整条高度都可点 ----------
         {
-            SequenceClip c = clip(2, 5);
+            SequenceClip c = clip(0, 1000);   // 撑开时间轴，否则动态上限只有 30 秒、无处可滚
             TimelineBar bar = new TimelineBar(BAR_X, BAR_Y, BAR_W, BAR_H, planeWith(c), new Rec());
             int midTrack = (trackLeft() + 22 + trackRight() - 22) / 2;
             bar.onClick(midTrack, stripY());
             double half = windowOf(bar);
-            chk("点滚动条中段 ≈ 滚到一半", Math.abs(half - 969 / 2.0) < 60,
-                    String.format("视窗=%.1f（期望≈484）", half));
+            double maxStart2 = planeWith(c).sequence.dynamicMaxSec() - TimelineBar.VISIBLE_SEC;
+            chk("点滚动条中段 ≈ 滚到一半", Math.abs(half - maxStart2 / 2.0) < 60,
+                    String.format("视窗=%.1f（期望≈%.0f）", half, maxStart2 / 2.0));
             // 控制条上边缘也要算控制条（手指按偏一点也能抓住）
             TimelineBar bar2 = new TimelineBar(BAR_X, BAR_Y, BAR_W, BAR_H, planeWith(c), new Rec());
             bar2.onClick(midTrack, BAR_Y + BAR_H - 18);

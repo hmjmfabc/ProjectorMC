@@ -185,9 +185,31 @@ public final class TtfFont implements AutoCloseable {
         if (placed != null) {
             slots.put(codePoint, placed);
         } else {
-            failed.add(codePoint);
+            // 【27.2.4-200 修】以前这里无条件 `failed.add(codePoint)`，于是图集一满，
+            // 这个字形就被**永久**拉黑（连图集空出来也不会再试）⇒ 跑久了整屏方框。
+            // 现在只有「这个码点本身画不出来」才拉黑；图集满属于**空间**问题，不拉黑，
+            // 只在限流后打一行日志，等图集有余量时自然会重试。
+            if (atlas.isFull()) {
+                reportAtlasFull();
+            } else {
+                failed.add(codePoint);
+            }
         }
         return placed;
+    }
+
+    /** 上一次「图集满」日志的时刻（1 万毫秒限流，别每帧刷）。 */
+    private long lastAtlasFullLogMs;
+
+    /** 【27.2.4-200】图集满不是这个字形的问题：限流报一次，等空间腾出来会自动重试。 */
+    private void reportAtlasFull() {
+        long now = System.currentTimeMillis();
+        if (now - lastAtlasFullLogMs < 10_000L) {
+            return;
+        }
+        lastAtlasFullLogMs = now;
+        Projector.LOGGER.warn("[Projector][字体] 字形图集已满，新字形暂时排不进去（已有字形不受影响）；"
+                + "想缓解可调大 render.glyphCachePages 或 atlasPageSize");
     }
 
     /** 直接查询字形位图（不做缓存），供导出的缩略图等场景使用。 */

@@ -140,6 +140,15 @@ dependencies {
     // AAC / M4A：本地 jar（libs/ 下；与 jflac 来自同一份参考实现的 libs/ 目录）
     implementation 'libs:javasound-aac:0.9.6'
     jarJar(implementation('libs:javasound-aac:0.9.6'))
+    // 【27.2.2】zxing core（Apache-2.0，纯 Java 无原生库 ⇒ 安卓可用）：
+    //   BetterLogin 的**扫码登录**要它生成二维码（`QRUtil` → `QRCodeWriter.encode`）。
+    //   不装它的话扫码那条路就编不过；手机/邮箱登录不需要它。
+    //   同样以**未经修改的独立 jar** 嵌在 META-INF/jarjar/ 里（见 NOTICE）。
+    //   ⚠ 嵌之前已核过同名包：`com.google.zxing.*` 与本项目现有依赖**不冲突**。
+    implementation 'com.google.zxing:core:3.5.4'
+    jarJar(implementation('com.google.zxing:core:3.5.4')) {
+        version { strictly '[3.5,3.6)'; prefer '3.5.4' }
+    }
 
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime

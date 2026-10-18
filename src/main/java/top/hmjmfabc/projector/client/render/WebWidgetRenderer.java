@@ -66,7 +66,10 @@ public final class WebWidgetRenderer {
     private static void drawBase(QuadCollector collector, PlaneRenderContext ctx, WebWidget w) {
         // ① 控件底色：默认透明（不挡平面本身），玩家自己设了颜色才填
         if (w.background != 0) {
-            solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h,
+            // 【27.2.4-200 修】solidRect 的入参是**控件局部坐标**（见它的 javadoc），
+            // 这里以前传的是画布坐标 (w.x, w.y) ⇒ 底色整块平移了一个控件偏移，
+            // 看起来"底色跑到控件右下角去"。全部改传局部 (0,0)-(w,h)。
+            solidRect(collector, ctx, w, 0, 0, w.w, w.h,
                     QuadCollector.withAlpha(w.background, w.alpha));
         }
 
@@ -88,7 +91,7 @@ public final class WebWidgetRenderer {
         // 顺利的那种情况（有画面）没必要每帧都问。
         String status = statusOf(w);
         // ② 还没画面：灰蓝占位 + 一行状态（未安装模组 / 初始化中 / 无帧超时…）
-        solidRect(collector, ctx, w, w.x, w.y, w.x + w.w, w.y + w.h,
+        solidRect(collector, ctx, w, 0, 0, w.w, w.h,
                 QuadCollector.withAlpha(PLACEHOLDER, w.alpha));
         drawStatusLine(collector, ctx, w, status);
         report(w, status);
@@ -127,10 +130,11 @@ public final class WebWidgetRenderer {
                                     WebWidget w, ResourceLocation texture) {
         collector.setRenderType(QuadCollector.imageType(texture));
         int tint = QuadCollector.withAlpha(0xFFFFFFFF, w.alpha);
-        double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, 0, 0);
-        double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, w.w, 0);
-        double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, w.w, w.h);
-        double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, 0, w.h);
+        // 四角走唯一真源（绕控件中心）
+        double[] p0 = w.rotPt(0, 0);
+        double[] p1 = w.rotPt(w.w, 0);
+        double[] p2 = w.rotPt(w.w, w.h);
+        double[] p3 = w.rotPt(0, w.h);
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
                 ctx.depth(), WebWidget.texU0(), WebWidget.texV0(), WebWidget.texU1(), WebWidget.texV1(), tint);
@@ -156,7 +160,9 @@ public final class WebWidgetRenderer {
         double lineH = size * 1.35;
         double top = w.y + Math.max(0, (w.h - lineH) * 0.5);
         TextRenderer.drawInBox(collector, ctx, font, "&7" + status, size, w.w, 1.15, 1, 1,
-                w.x, top, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.x, w.y);
+                // 【27.2.4-200 修】这里给的是**画布坐标**的轴心：以前传 localRotX/Y（局部 0..w），
+                // 等于把旋转轴设到画布原点附近 ⇒ 控件一旋转，状态文字直接飞出控件。
+                w.x, top, w.w, lineH, w.rot, w.alpha, ctx.depth(), w.rotX(), w.rotY());
     }
 
     private static void solidRect(QuadCollector collector, PlaneRenderContext ctx, WebWidget w,
@@ -164,10 +170,11 @@ public final class WebWidgetRenderer {
         if ((argb >>> 24) == 0 || Math.abs(x1 - x0) < 1.0e-4 || Math.abs(y1 - y0) < 1.0e-4) {
             return;
         }
-        double[] p0 = TextRenderer.rot(w.x, w.y, w.rot, x0 - w.x, y0 - w.y);
-        double[] p1 = TextRenderer.rot(w.x, w.y, w.rot, x1 - w.x, y0 - w.y);
-        double[] p2 = TextRenderer.rot(w.x, w.y, w.rot, x1 - w.x, y1 - w.y);
-        double[] p3 = TextRenderer.rot(w.x, w.y, w.rot, x0 - w.x, y1 - w.y);
+        // 入参是**控件局部坐标** ⇒ 直接用 rotPt（它自己减半宽/半高再转）
+        double[] p0 = w.rotPt(x0, y0);
+        double[] p1 = w.rotPt(x1, y0);
+        double[] p2 = w.rotPt(x1, y1);
+        double[] p3 = w.rotPt(x0, y1);
         collector.setRenderType(QuadCollector.imageType(WidgetRenderer.WHITE));
         collector.canvasQuad(ctx.axisX(), ctx.axisY(), ctx.normal(), ctx.origin(),
                 p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],

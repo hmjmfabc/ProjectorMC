@@ -55,6 +55,19 @@ public final class ProjectorData extends SavedData {
                 new SavedData.Factory<>(ProjectorData::new, ProjectorData::load), FILE_ID);
     }
 
+    /**
+     * 数据格式版本。2 = 【27.2.2-160】清掉「没有控件的平面」。
+     *
+     * <p>为什么要有这一步：老版本里「方块被挖掉又搭回来」会让 U 键**新建**一个空平面
+     * （旧平面还在、但它的方块集合里没有新方块了），于是一个个空壳越攒越多 ——
+     * 既占着平面数量上限，又让以后按 U 选中一个「什么都没有的壳」。
+     * 用户要求：**升级到下个版本以后，把所有没有控件的平面全删掉**。</p>
+     *
+     * <p>只在**跨版本升级**时跑一次（靠 {@code dataVersion} 门控），不是每次开服都清 ——
+     * 否则玩家刚按 U 建好、还没来得及加控件的平面会被下一次开服吃掉。</p>
+     */
+    public static final int DATA_VERSION = 2;
+
     public static ProjectorData load(CompoundTag tag, HolderLookup.Provider registries) {
         ProjectorData data = new ProjectorData();
         ListTag dims = tag.getList("dimensions", Tag.TAG_COMPOUND);
@@ -72,6 +85,22 @@ public final class ProjectorData extends SavedData {
                 }
             }
             data.byDimension.put(dim, list);
+        }
+        // 【160】升级清理（只跑一次，见 DATA_VERSION 的说明）
+        int version = tag.contains("dataVersion") ? tag.getInt("dataVersion") : 0;
+        if (version < DATA_VERSION) {
+            int removed = 0;
+            for (Map.Entry<ResourceLocation, List<Plane>> e : data.byDimension.entrySet()) {
+                List<Plane> list = e.getValue();
+                int before = list.size();
+                list.removeIf(p -> p.widgets == null || p.widgets.isEmpty());
+                removed += before - list.size();
+            }
+            if (removed > 0) {
+                top.hmjmfabc.projector.Projector.LOGGER.info(
+                        "[Projector] 升级清理（数据版本 {} → {}）：删除了 {} 个「没有控件的平面」",
+                        version, DATA_VERSION, removed);
+            }
         }
         return data;
     }
@@ -92,7 +121,7 @@ public final class ProjectorData extends SavedData {
             dims.add(dt);
         }
         tag.put("dimensions", dims);
-        tag.putInt("dataVersion", 1);
+        tag.putInt("dataVersion", DATA_VERSION);
         return tag;
     }
 

@@ -37,13 +37,14 @@ public final class WebOverlayRenderer {
     /**
      * 一块画布的变换：旋转轴心 {@code (ax, ay)}（画布坐标）+ 旋转角（度，逆时针）。
      *
-     * <p>本项目所有控件都是「绕锚点（左下角）旋转」的，所以原语拿到的是画布坐标，
-     * 先减轴心再旋转。参数类型里<b>没有</b>控件，因此对任何控件类型都能用。</p>
+     * <p>【27.2.1-hotfix-144】轴心 = **控件中心**（{@link WebWidget#rotX()}），
+     * 不再是左下角锚点 —— 世界里的渲染、命中检测、选中框现在都是绕中心，
+     * 覆盖层（按钮栏、提示行）必须跟着同一处真源，否则 180° 时它们会跑到控件另一侧。</p>
      */
     public record Frame(double ax, double ay, double rot) {
-        /** 从任意控件取它的画布变换（锚点 + 旋转角）。 */
+        /** 从任意控件取它的画布变换（**中心** + 旋转角）。 */
         public static Frame of(WebWidget w) {
-            return new Frame(w.x, w.y, w.rot);
+            return new Frame(w.rotX(), w.rotY(), w.rot);
         }
     }
 

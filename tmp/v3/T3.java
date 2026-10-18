@@ -92,7 +92,8 @@ public class T3 {
         SequenceClip csl = new SequenceClip(wsl.id, 0, 4);
         csl.inAnim = SequenceAnim.ANIM_SLIDE; csl.inDur = 1.0; csl.slideAngle = 0;
         t5.add(csl); t5.playFromStart(0);
-        chk("滑动 t=0 dx=16 (20*0.8)", Math.abs(t5.stateOf(wsl, tick(0)).dx() - 16.0) < 1e-6,
+        // 【27.2.4-200】0° 在界面上的标注是「从左」，画布 +x 指向观众右手侧 ⇒ 起手 dx 必须是负的
+        chk("滑动 t=0 dx=-16 (20*0.8，从左进场)", Math.abs(t5.stateOf(wsl, tick(0)).dx() + 16.0) < 1e-6,
                 "" + t5.stateOf(wsl, tick(0)).dx());
         chk("滑动 t=1 dx=0", Math.abs(t5.stateOf(wsl, tick(1)).dx()) < 1e-6, "");
 
@@ -145,7 +146,8 @@ public class T3 {
         SequenceClip bad = new SequenceClip(w1.id, 1200, -5);
         bad.inDur = 99; bad.outDur = 99; bad.loopSpeed = 0;
         bad.sanitize();
-        chk("时间夹到 0~999", bad.startSec >= 0 && bad.endSec <= 999 && bad.startSec <= bad.endSec,
+        chk("时间夹到 0~硬上限（27.2.2 起是安全阀，不再是 999）",
+                bad.startSec >= 0 && bad.endSec <= SequenceClip.MAX_SECONDS && bad.startSec <= bad.endSec,
                 bad.startSec + "~" + bad.endSec);
         chk("时长夹到显示时长", bad.inDur <= bad.duration() + 1e-9 && bad.outDur <= bad.duration() + 1e-9,
                 bad.inDur + "/" + bad.duration());

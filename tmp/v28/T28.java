@@ -33,10 +33,15 @@ public class T28 {
         trackParsing();
         distIsolation();
         localMusicSharing();
+        musicClockDrift();
         titleTruncation();
         seekResync();
         durationProbe();
+        durationFormulaRegression();
+        chessRotationRoundTrip();
         audioBuffering();
+        seekInStream();
+        progressFreeze();
 
         System.out.println();
         for (String f : failed) {
@@ -52,7 +57,8 @@ public class T28 {
     // ------------------------------------------------------------------ 几何
 
     private static void widgetGeometry() {
-        MusicWidget w = new MusicWidget();
+        top.hmjmfabc.projector.common.widget.MusicWidget w =
+                new top.hmjmfabc.projector.common.widget.MusicWidget();
         w.x = 10;
         w.y = 20;
         w.w = 112;
@@ -84,9 +90,11 @@ public class T28 {
         double[] rb = r.buttonBox();
         double rcx = (rb[0] + rb[2]) / 2;
         double rcy = (rb[1] + rb[3]) / 2;
-        double[] rotated = top.hmjmfabc.projector.client.render.TextRenderer.rot(
-                r.x, r.y, r.rot, rcx - r.x, rcy - r.y);
-        check("旋转后按旋转后的坐标点仍命中", r.hitButton(r.x + rotated[0], r.y + rotated[1]));
+        // 【27.2.1-hotfix-144】轴心改成**控件中心**后，命中检测与渲染仍必须同源：
+        // 按钮中心的映射点 = Widget.rotPt(局部) —— 用它去点必须命中；
+        // 而「未旋转时那个坐标」因为被转走了，必须打不中。
+        double[] rotated = r.rotPt(rcx, rcy);
+        check("旋转后按旋转后的坐标点仍命中", r.hitButton(rotated[0], rotated[1]));
         check("旋转后按未旋转坐标点不再命中", !r.hitButton(rcx, rcy));
 
         // 竖条数量：跟宽度走，且有上下限
@@ -100,7 +108,8 @@ public class T28 {
     // ------------------------------------------------------------------ 播放状态机
 
     private static void widgetPlayState() {
-        MusicWidget w = new MusicWidget();
+        top.hmjmfabc.projector.common.widget.MusicWidget w =
+                new top.hmjmfabc.projector.common.widget.MusicWidget();
         MusicTrack.applyTo(w, MusicTrack.netease(123456L, "测试歌曲", "测试歌手", 200_000L));
         check("换歌后回到未播放", !w.playing && w.positionMs == 0L);
         check("时长被记录下来", w.durationMs == 200_000L);
@@ -389,6 +398,132 @@ public class T28 {
                 && top.hmjmfabc.projector.client.music.MusicPlayer.SEEK_TOLERANCE_MS <= 3000);
     }
 
+    /**
+     * 【27.2.1-hotfix-144】「2:40 量成 0:13」的回归。
+     *
+     * <p>老公式 {@code byteLength / format.getFrameSize() / 采样率} 拿的是**解码后 PCM**
+     * 的帧大小（48k 立体声 16 位 = 4 字节），却被当成 MP3 帧大小 ⇒ 帧数被放大几千倍。
+     * 实测那份文件：2,571,693 字节 ⇒ 642,923「帧」⇒ 13394ms。这一条把「不许再出现
+     * 用 PCM frameSize 推时长」写进断言。</p>
+     */
+    private static void durationFormulaRegression() {
+        // ① 真实样本数算时长（穷举法的核心公式）必须准：造一段 10.0 秒的 WAV，量出来就是 10 秒
+        try {
+            javax.sound.sampled.AudioFormat fmt =
+                    new javax.sound.sampled.AudioFormat(44100f, 16, 2, true, false);
+            int frames = 44100 * 10;
+            byte[] pcm = new byte[frames * 4];
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            javax.sound.sampled.AudioSystem.write(new javax.sound.sampled.AudioInputStream(
+                    new java.io.ByteArrayInputStream(pcm), fmt, frames),
+                    javax.sound.sampled.AudioFileFormat.Type.WAVE, out);
+            byte[] wav = out.toByteArray();
+            long ms = top.hmjmfabc.projector.client.music.AudioDecoder.probeDurationMsExact(
+                    new java.io.ByteArrayInputStream(wav), wav.length);
+            check("穷举量时长：10 秒的 WAV 量出 10 秒（±50ms）", Math.abs(ms - 10_000L) <= 50L);
+        } catch (Throwable t) {
+            failed.add("穷举量时长验证抛异常：" + t);
+        }
+
+        // ② 那个错误公式必须**从源码里消失**（它会让 2:40 变 0:13）
+        try {
+            String src = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/music/AudioDecoder.java"));
+            check("AudioDecoder 里不再有「byteLength / frameSize / 采样率」那条错公式",
+                    !src.contains("framesBySize"));
+            check("有穷举式量时长入口（本地文件用它拿真值）",
+                    src.contains("probeDurationMsExact"));
+        } catch (Exception e) {
+            failed.add("读不到 AudioDecoder 源码：" + e);
+        }
+
+        // ③ 码率估算仍在（在线流只有它可用），且公式是 字节×8÷码率
+        javax.sound.sampled.AudioFormat fmt = new javax.sound.sampled.AudioFormat(
+                javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED, 48000f, 16, 2, 4, 48000f, false,
+                java.util.Map.<String, Object>of("mp3.bitrate.nominal.bps", 128000));
+        long byBitrate = top.hmjmfabc.projector.client.music.AudioDecoder.probeDurationMs(
+                new javax.sound.sampled.AudioInputStream(
+                        new java.io.ByteArrayInputStream(new byte[0]), fmt, -1L),
+                2571693L);
+        check("码率估算：2,571,693 字节 @128kbps ≈ 160 秒（不是 13 秒）",
+                Math.abs(byBitrate - 160_730L) <= 5L);
+    }
+
+    /**
+     * 【27.2.1-hotfix-144】棋类旋转后的「落子准不准」—— 用**往返不变量**验，
+     * 不看代码只看性质：每个格子的中心（渲染用的坐标）反算回来，必须还是它自己。
+     *
+     * <p>这条能抓住真 bug：轴线写错、`toLocal` 少一步逆旋转、局部/画布坐标混用，
+     * 都会让某些（尤其是旋转后的）格子反算成隔壁甚至越界。</p>
+     */
+    private static void chessRotationRoundTrip() {
+        top.hmjmfabc.projector.common.widget.ChessWidget w =
+                new top.hmjmfabc.projector.common.widget.ChessWidget();
+        // ⚠ x/y 必须是**非零**的：用 toLocal（相对锚点）代替 toLocalAbs 的那个 bug
+        //   只有在 x/y ≠ 0 时才暴露（之前 T28 那份测试正是 w.x=w.y=0，所以没抓住）
+        w.x = 40;
+        w.y = 24;
+        w.w = 180;
+        w.h = 180;
+        // 五种棋都过一遍（棋盘尺寸/交叉点式都不同）
+        // 五种棋都过一遍（棋盘尺寸/交叉点式都不同）。用 GameKind.PLAYABLE 的真实取值，
+        // 军棋（4）已退役 ⇒ 跳过。
+        for (int kind : top.hmjmfabc.projector.common.game.GameKind.PLAYABLE) {
+            w.game = new top.hmjmfabc.projector.common.game.GameSession();
+            w.game.kind = kind;
+            w.game.reset();
+            w.ensureBoard();
+            var g = w.geometry();
+            boolean allOk = true;
+            int cells = 0;
+            for (int row = 0; row < g.rows(); row++) {
+                for (int col = 0; col < g.cols(); col++) {
+                    // centerOf 给**未旋转的画布**坐标；棋子实际显示位置 = rotPt(局部)
+                    // ⇒ 这里也用同一条换算，验「显示位置 → 反算格号」是否回到自己
+                    double[] c = w.rotPt(w.localCenterOf(col, row)[0], w.localCenterOf(col, row)[1]);
+                    int[] back = w.cellAt(c[0], c[1]);
+                    if (back == null || back[0] != col || back[1] != row) {
+                        allOk = false;
+                    }
+                    cells++;
+                }
+            }
+            check("棋种 " + top.hmjmfabc.projector.common.game.GameKind.name(kind)
+                    + "：未旋转时每个格子中心都能反算回自己（" + cells + " 格）", allOk);
+        }
+        // 旋转后同样必须成立（这是玩家报的「旋转后落子不准」）
+        for (double deg : new double[]{30, 45, 90, 180, -75, 270}) {
+            w.rot = deg;
+            boolean allOk = true;
+            var g = w.geometry();
+            for (int row = 0; row < g.rows(); row++) {
+                for (int col = 0; col < g.cols(); col++) {
+                    // 同上：棋子显示位置 = rotPt(局部中心)
+                    double[] canvas = w.rotPt(w.localCenterOf(col, row)[0], w.localCenterOf(col, row)[1]);
+                    int[] back = w.cellAt(canvas[0], canvas[1]);
+                    if (back == null || back[0] != col || back[1] != row) {
+                        allOk = false;
+                    }
+                }
+            }
+            check("旋转 " + deg + "° 时：点在棋子上仍然落在同一格（往返一致）", allOk);
+        }
+        w.rot = 0;
+
+        // 源码级：cellAt 必须先逆旋转（这道工序漏了就是「看着点在子上、结果点了隔壁」）
+        try {
+            String src = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/java/top/hmjmfabc/projector/common/widget/ChessWidget.java"));
+            int i = src.indexOf("public int[] cellAt(");
+            // cellAt 必须**先绕画布中心逆旋转**再算格子（几何原点 ox/oy 就在未旋转的画布坐标系里）
+            int j = src.indexOf("toLocal(canvasX, canvasY)", i);
+            check("cellAt 先把画布坐标换算回局部再算格子（与 centerOf/rotPt 严格互逆）",
+                    i >= 0 && j > i);
+        } catch (Exception e) {
+            failed.add("读不到 ChessWidget 源码：" + e);
+        }
+    }
+
     /** 时长探测三级兜底（本轮「2:40 显示成 3:00」的回归）。 */
     private static void durationProbe() {
         // ③ 码率 × 字节数：128 kbps 的 2,560,000 字节 ≈ 160 秒
@@ -445,7 +580,8 @@ public class T28 {
                 && "".equals(top.hmjmfabc.projector.client.render.MusicWidgetRenderer
                         .truncate(null, 50, m)));
 
-        MusicWidget w = new MusicWidget();
+        top.hmjmfabc.projector.common.widget.MusicWidget w =
+                new top.hmjmfabc.projector.common.widget.MusicWidget();
         check("默认没有黑底（background=0 不填充）", w.background == 0);
         check("边框与图形都用白色（textColor）", w.textColor == 0xFFFFFFFF);
 
@@ -499,6 +635,172 @@ public class T28 {
         }
     }
 
+    /**
+     * 【27.2.3-hotfix-142】流内快进：跳进度**不许**重开整段流。
+     *
+     * <p>这一套是「能抓住真 bug」的写法：用一个**自己实现的** WAV 流（不碰真实文件、
+     * 不联网），把「打开了几次」记在计数器里。旧实现每次跳进度都重新 open ⇒
+     * 计数会变成 2；新实现在同一条流上快进 ⇒ 计数仍是 1，而且解码位置真的前进了。</p>
+     */
+    private static void seekInStream() {
+        java.nio.file.Path dir = null;
+        top.hmjmfabc.projector.client.music.MusicAudioStream stream = null;
+        try {
+            int seconds = 30;
+            dir = java.nio.file.Files.createTempDirectory("t28-seek");
+            java.nio.file.Path wav = dir.resolve("tone.wav");
+            java.nio.file.Files.write(wav, syntheticWav(seconds));
+
+            // 真正跑一遍完整链路：磁盘 WAV → MusicTrack → MusicAudioStream（WAV 是纯 Java 解码，
+            // 不需要任何外部依赖，所以这一套在没网的机器上也跑得动）
+            top.hmjmfabc.projector.client.music.MusicTrack track =
+                    top.hmjmfabc.projector.client.music.MusicTrack.local(
+                            wav.toAbsolutePath().toString(), "T28-tone", seconds * 1000L);
+            // 波形对象不能给 null：解码线程会往它里面写（open 之后立刻开始解码）
+            top.hmjmfabc.projector.client.music.MusicEnvelope env =
+                    top.hmjmfabc.projector.client.music.MusicEnvelope.forTrack("T28", seconds * 1000L);
+            stream = top.hmjmfabc.projector.client.music.MusicAudioStream.open(track, env, 0L);
+
+            long decodedBefore = stream.decodedMs();
+            long bytesBefore = wav.toFile().length();
+
+            // ① 往前跳 10 秒：必须成功，**而且不重开数据源** ——
+            //    判据：同一条流还在用（read 还能拿到数据），而且底部那个流没有被关掉。
+            //    「有没有重新联网/重新打开」在源码级的判据见下面 seekPathsAreWired()。
+            boolean ok = stream.seekForwardTo(10_000L);
+            check("往前跳 10 秒：流内快进成功", ok);
+            // 【27.2.4-200】快进不再在调用线程上同步丢字节（那会拿着锁做网络读），
+            // 而是把「要丢多少」交给解码线程 ⇒ 这里等一小会儿再看结果。
+            long waitUntil = System.currentTimeMillis() + 3000L;
+            while (stream.decodedMs() < 10_000L && System.currentTimeMillis() < waitUntil) {
+                try {
+                    Thread.sleep(20L);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            check("快进后解码位置真的前进了（≥10 秒）", stream.decodedMs() >= 10_000L);
+            check("快进前位置 < 快进后位置", decodedBefore < stream.decodedMs());
+            // 快进之后队列必须还能出货（否则玩家听到的是「静音几秒」）
+            java.nio.ByteBuffer got = null;
+            for (int i = 0; i < 40 && got == null; i++) {
+                got = stream.read(9600);
+                if (got == null) Thread.sleep(25);
+            }
+            check("快进之后仍能读到音频数据（不会静音）", got != null && got.remaining() > 0);
+            check("源文件大小没变（只是读取，没有改写文件）", wav.toFile().length() == bytesBefore);
+
+            // ② 往回跳：HTTP 顺序流做不到 ⇒ 必须返回 false（让调用方回退到重开流）
+            check("往回跳 5 秒：明确返回 false（交给调用方重开流）", !stream.seekForwardTo(5_000L));
+
+            // ③ 再往前跳：允许，不能崩
+            check("再往前跳 20 秒：成功且不崩", stream.seekForwardTo(20_000L));
+
+            // ④ 已关闭的流不许再快进
+            stream.close();
+            check("已关闭的流快进：安全返回 false", !stream.seekForwardTo(25_000L));
+        } catch (Throwable t) {
+            failed.add("流内快进验证抛异常：" + t);
+        } finally {
+            try {
+                if (stream != null) stream.close();
+            } catch (Throwable ignored) {
+                // 收尾失败不影响结论
+            }
+            if (dir != null) {
+                try (var files = java.nio.file.Files.list(dir)) {
+                    for (java.nio.file.Path p : files.toList()) java.nio.file.Files.deleteIfExists(p);
+                } catch (Throwable ignored) {
+                    // 临时目录留着也无害
+                }
+                try {
+                    java.nio.file.Files.deleteIfExists(dir);
+                } catch (Throwable ignored) {
+                    // 同上
+                }
+            }
+        }
+
+        seekPathsAreWired();
+    }
+
+    /**
+     * 【27.2.3-hotfix-142】加载期间进度显示必须**钉住不动**
+     * （用户要求：跳进度本来就要等，那等待期间进度条不要自己往前跑）。
+     */
+    private static void progressFreeze() {
+        top.hmjmfabc.projector.common.widget.MusicWidget w =
+                new top.hmjmfabc.projector.common.widget.MusicWidget();
+        w.durationMs = 60_000L;
+        w.playing = true;
+        w.positionMs = 10_000L;
+        w.startedGameTime = 1_000L;
+
+        long at2000 = w.positionAt(1_200L);        // 200 刻 × 50ms = 10 秒之后
+        check("未冻结时进度按时间前进", at2000 == 20_000L);
+
+        w.markBuffering(20_000L);
+        check("冻结后：即使游戏刻继续走，显示的位置不动",
+                w.positionAt(1_400L) == 20_000L && w.positionAt(2_000L) == 20_000L);
+        check("冻结标记可查询（供 tick 里判断何时解冻）", w.isBuffering());
+
+        w.clearBuffering();
+        check("解冻后恢复按时间推进", w.positionAt(1_400L) == 30_000L);
+        check("解冻后标记清除", !w.isBuffering());
+
+        // 冻结位置会被夹在时长内（不能显示成超过总长）
+        w.markBuffering(999_999L);
+        check("冻结位置被夹在 0~时长 之间", w.positionAt(1_400L) == w.effectiveDurationMs());
+        w.clearBuffering();
+
+        // 注：曾经这里还有一条「彩蛋连点必须用墙钟计时」的断言 ——
+        // 随着 27.2.1-hotfix-144 的大版本回滚，彩蛋功能整体移除，那条断言也一并删掉。
+    }
+
+    /**
+     * 源码级：确认「跳进度」这条路真的接上了流内快进，而不是又回到「每次重开一整段」。
+     * <p>为什么要这一条：行为测试只能证明「快进函数本身对」，证明不了**调用方有没有用它** ——
+     * 本项目在这类「死代码吃掉功能」上翻过车。</p>
+     */
+    private static void seekPathsAreWired() {
+        try {
+            String manager = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/music/MusicManager.java"));
+            String player = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/music/MusicPlayer.java"));
+            String editor = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/java/top/hmjmfabc/projector/client/gui/WidgetEditorScreen.java"));
+
+            check("MusicPlayer 提供了流内快进入口", player.contains("public boolean seekWithinStream("));
+            check("流内快进有窗口上限（跳太远就重开流更划算）",
+                    player.contains("SEEK_IN_STREAM_WINDOW_MS"));
+            check("世界内 / 编辑器两条 seek 都走同一个跳转实现",
+                    manager.contains("private static void seekAudioLocked(")
+                            && manager.contains("seekAudioLocked(plane, widget, key, true)"));
+            check("跳转时先试流内快进、失败才回退重开",
+                    manager.indexOf("seekWithinStream") < manager.indexOf("player.play(key, MusicTrack.of(widget), at, hear, vol"));
+            check("编辑器拖动 seek 走了节流入口（不再每次拖动都发一条）",
+                    editor.contains("seekInWorldForEditor"));
+            check("节流间隔 > 0", manager.contains("EDITOR_SEEK_MIN_INTERVAL_MS = 250L"));
+        } catch (Exception e) {
+            failed.add("读不到音乐源码：" + e);
+        }
+    }
+
+    /** 造一段 PCM WAV（静音，1 秒 1 分片，够快进用）。 */
+    private static byte[] syntheticWav(int seconds) throws Exception {
+        javax.sound.sampled.AudioFormat fmt = new javax.sound.sampled.AudioFormat(44100f, 16, 2, true, false);
+        int frames = 44100 * seconds;
+        byte[] pcm = new byte[frames * 4];
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        javax.sound.sampled.AudioSystem.write(
+                new javax.sound.sampled.AudioInputStream(
+                        new java.io.ByteArrayInputStream(pcm), fmt, frames),
+                javax.sound.sampled.AudioFileFormat.Type.WAVE, out);
+        return out.toByteArray();
+    }
+
     /** 从源码里抠出某个 int 常量的值（形如 {@code NAME = 1234;}）。 */
     private static int intConst(String source, String name) {
         java.util.regex.Matcher m = java.util.regex.Pattern
@@ -550,7 +852,8 @@ public class T28 {
             }
         }
 
-        MusicWidget w = new MusicWidget();
+        top.hmjmfabc.projector.common.widget.MusicWidget w =
+                new top.hmjmfabc.projector.common.widget.MusicWidget();
         check("音乐控件用字符串存来源类型（不引用客户端枚举）",
                 "LOCAL".equals(w.sourceKind));
         MusicTrack.applyTo(w, MusicTrack.netease(1L, "t", "a", 1000L));
@@ -670,6 +973,55 @@ public class T28 {
                 manager.contains("ensureAudioReady(music) && at != null"));
         check("服务端按「视频档」给音频配额（否则 6 MB 的歌传不上去）",
                 server.contains("videoQuota(payload.video(), payload.name())"));
+    }
+
+    /**
+     * 【27.2.1-hotfix-140】玩家报的 Bug：**服务器上放网易云会卡顿（断断续续、进度跳跃），
+     * 单人存档不会**。
+     *
+     * <p>三条原因叠加：①控件进度按<b>游戏刻</b>推算、听到的声音是<b>真实时间</b>，
+     * 专用服务器 TPS 低于 20 时两者持续拉开；②旧代码把「拉开超过 1.5 秒」当成
+     * 「有人改了进度」⇒ <b>重开这一段音频流</b>（本地文件重开瞬时、听不出来，
+     * 网易云要重新联网 ⇒ 一卡好几秒）；③重开后再漂开再重开 ⇒ 断断续续 + 进度跳跃。
+     * 单人存档里客户端就是服务端、TPS 稳定 20 ⇒ 从来没出现过。</p>
+     *
+     * <p>这一组把新规则钉住：<b>只有控件数据真的被别人改过才重开流；
+     * 漂移只重钉锚点（不断音频）</b>，另加一次带冷却的服务端进度校正。</p>
+     */
+    private static void musicClockDrift() {
+        // ① 纯函数：多少差距值得重钉锚点（重钉 ≠ 重开流）
+        check("漂移 200ms 不重钉（正常抖动）", !MusicManager.needsReanchor(10_000L, 10_200L));
+        check("漂移 2 秒要重钉（TPS 偏低时的累积漂移）", MusicManager.needsReanchor(10_000L, 12_000L));
+        check("听到的位置更靠前也算漂移（取绝对值）", MusicManager.needsReanchor(12_000L, 10_000L));
+
+        // ② 旧判据必须从起播路径上消失：不能再「差得多就重开流」
+        String manager = read("src/main/java/top/hmjmfabc/projector/client/music/MusicManager.java");
+        String player = read("src/main/java/top/hmjmfabc/projector/client/music/MusicPlayer.java");
+        check("起播路径里不再出现「进度跳变 ⇒ 重开这一段」（旧日志串已删）",
+                !manager.contains("\u8fdb\u5ea6\u8df3\u53d8\uff08"));
+        check("漂移改成重钉锚点（needsReanchor + 写回 positionMs/startedGameTime）",
+                manager.contains("needsReanchor(heard, shown)")
+                        && manager.contains("music.positionMs = Math.max(0L, heard)")
+                        && manager.contains("music.startedGameTime = gameTime;"));
+        check("只有「控件数据真的被改过」才重开流（syncAnchor 里的 changed 分支）",
+                manager.contains("boolean changed = own == null || !own.equals(current)")
+                        && manager.contains("player.play(key, MusicTrack.of(music), at, hearDistance, volume, want"));
+        check("而且还要「目标位置和本机听到的差 > 3 秒」才算有人跳了进度（小幅校正不重开流）",
+                manager.contains("Math.abs(want - heardNow) > FOLLOW_MS")
+                        && manager.contains("FOLLOW_MS = 3000L"));
+        check("本机自己动作的回声被吸收，不当成别人改进度",
+                manager.contains("isOwnEcho(key)") && manager.contains("SELF_ACTION_GRACE_MS")
+                        && manager.contains("noteOwnAction("));
+        check("漂移大到 3 秒才回传一次 seek，且有 60 秒冷却（不给服务器刷包）",
+                manager.contains("HEAL_MS = 3000L") && manager.contains("HEAL_COOLDOWN_MS = 60_000L"));
+        check("根因（游戏刻 vs 真实时间 / 服务器 TPS）写在注释里，后来人不用再查一遍",
+                manager.contains("TPS") && manager.contains("\u6e38\u620f\u523b"));
+        check("★ 时间锚点记在「真的出声」那一刻，不再把联网加载时间算进播放位置",
+                player.contains("channel.play();") && player.contains("markAudible();"));
+
+        // ③ 旧函数本身保留（它是「玩家拖了进度条」的判据），语义不变
+        check("shouldResync 仍然只在差值 > 1.5 秒时为真（供其它调用方/测试使用）",
+                !MusicPlayer.shouldResync(1000L, 2000L) && MusicPlayer.shouldResync(1000L, 3000L));
     }
 
     private static String read(String path) {

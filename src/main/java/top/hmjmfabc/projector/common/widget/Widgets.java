@@ -16,6 +16,61 @@ public final class Widgets {
     private Widgets() {
     }
 
+    /** 新建网页控件的默认地址。 */
+    public static final String DEFAULT_WEB_URL = "https://cn.bing.com/";
+
+    /** 平时新建文本控件的默认文字。 */
+    public static final String DEFAULT_TEXT = "Hello, Projector!";
+
+    /** 几个固定的「生日」彩蛋：月-日 → 默认文字。 */
+    private static final int[][] BIRTHDAYS = {
+            {5, 17},   // Minecraft
+            {8, 31},   // 初音未来
+            {9, 21},   // 作者
+            {9, 19},   // 本模组
+    };
+
+    private static final String[] BIRTHDAY_TEXTS = {
+            "Happy birthday,Minecraft!",
+            "Happy birthday,Hatsune Miku!",
+            "Happy birthday,Hmjmfabc!",
+            "Happy birthday,Projector!",
+    };
+
+    /**
+     * 新建文本控件的默认文字 —— 遇到「生日」就换成祝福语（彩蛋）。
+     *
+     * <p>日期（已核对，用户给的日期无误）：</p>
+     * <ul>
+     *   <li><b>5 月 17 日</b>：Minecraft 的生日 —— 2009 年 5 月 17 日发布第一个公开版本
+     *       （Classic 的首次公开发布就是这个日子）；</li>
+     *   <li><b>8 月 31 日</b>：初音未来的生日（2007 年 8 月 31 日发售）；</li>
+     *   <li><b>9 月 21 日</b>：作者 Hmjmfabc 的生日（用户给定）；</li>
+     *   <li><b>9 月 19 日</b>：本模组投影仪的生日（用户给定）。</li>
+     * </ul>
+     *
+     * <p>用的是**玩家本机的日期**（{@code LocalDate.now()}，系统时区）——
+     * 彩蛋本来就该按玩家自己的日历走，不必与服务端统一。</p>
+     *
+     * <p>纯函数（可注入日期），所以 {@code tmp/v38} 能在不改系统时间的前提下
+     * 把 365 天全跑一遍 —— 日期彩蛋最容易犯的错就是「那天永远不触发」。</p>
+     */
+    public static String defaultText() {
+        return defaultTextFor(java.time.LocalDate.now());
+    }
+
+    /** 上面那个的纯函数版本（给定日期）。 */
+    public static String defaultTextFor(java.time.LocalDate date) {
+        if (date != null) {
+            for (int i = 0; i < BIRTHDAYS.length; i++) {
+                if (date.getMonthValue() == BIRTHDAYS[i][0] && date.getDayOfMonth() == BIRTHDAYS[i][1]) {
+                    return BIRTHDAY_TEXTS[i];
+                }
+            }
+        }
+        return DEFAULT_TEXT;
+    }
+
     public static CompoundTag save(Widget w) {
         return w.save();
     }
@@ -40,7 +95,7 @@ public final class Widgets {
         switch (w.kind()) {
             case Widget.KIND_TEXT -> {
                 TextWidget tw = (TextWidget) w;
-                tw.text = "Hello, Projector!";
+                tw.text = defaultText();
                 tw.fontSize = 16;
                 // 默认框必须按内容估算，不能写死 64x16：
                 // 那句示例文字在 16 号字下宽约 190 画布单位，
@@ -101,6 +156,10 @@ public final class Widgets {
                 WebWidget web = (WebWidget) w;
                 web.w = 96;
                 web.h = 54;
+                // 【27.2.3-hotfix-142】默认地址：默认搜索引擎（以前是空 = 白页，
+                // 玩家建完控件还得自己想个网址，不知道填什么就卡住了）。
+                // 只认 http/https（WebWidget.acceptable），这个地址是合法且免登录的。
+                web.url = DEFAULT_WEB_URL;
             }
             default -> {
                 w.w = 32;

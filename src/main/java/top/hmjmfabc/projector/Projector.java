@@ -23,7 +23,7 @@ public class Projector {
     public static final String MODID = "projector";
 
     /** 构建标识（显示在 HUD 上，用于确认加载的是哪一版）。 */
-    public static final String BUILD_TAG = "27.2";
+    public static final String BUILD_TAG = "27.2.4";
 
     /** 全模组共用的日志器。 */
     public static final Logger LOGGER = LogUtils.getLogger();
@@ -32,6 +32,19 @@ public class Projector {
         // 第一步就检查安卓链路，保证这些警告排在日志最前面（见方法注释）。
         warnIfAndroidVideoStackIncomplete();
         warnIfAndroidWebStackIncomplete();
+        // 【娱乐更新】这两条警告说的场景一旦真发生，游戏会崩 ——
+        // 崩的时候玩家看的是日志/崩溃报告，而那里不会自己长出「你还缺一个兼容模组」。
+        // 所以顺手把这段话写到 logs/latest.log / debug.log，并登记进崩溃报告
+        // （FML 的公开 API：CrashReportCallables；没缺件时一个字都不写）。详见 CrashTaunt。
+        top.hmjmfabc.projector.CrashTaunt.register();
+        // 【27.2.2】网易云登录模块（内置的 Better Login，MIT）：公共端也要初始化，
+        // 否则专用服务端上 /nmbl server 拿不到 API 实例与 VIP 解析器。
+        top.hmjmfabc.projector.compat.betterlogin.BetterLoginBridge.init();
+        // 【27.2.2 修】/nmbl server … 是**服务端命令**，必须在公共侧注册：
+        // 以前它挂在客户端入口里（用的是公共事件 RegisterCommandsEvent），
+        // 结果专用服务端上那条命令根本不存在。客户端命令另见 ClientCommandBridge。
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                top.hmjmfabc.projector.compat.betterlogin.BetterLoginBridge::onRegisterCommands);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(top.hmjmfabc.projector.network.ProjectorNetwork::register);
 
@@ -72,11 +85,14 @@ public class Projector {
             if (!isModLoaded("watermedia")) return;     // 没装 WaterMedia：视频本来就不由它负责
             if (isModLoaded(ANDROID_BRIDGE_MODID)) return; // 三件套齐全：正常
             LOGGER.error("================================================================");
+            LOGGER.error("投影仪 · 来自蓝色大肥鱼的嘲讽 / Projector · Missing-piece taunt");
+            LOGGER.error("[Projector] 恭喜你，成功把游戏搞崩了🎉🎉🎉");
             LOGGER.error("[Projector] 在 Android 上检测到 WaterMedia，但没有检测到它的安卓兼容模组：");
             LOGGER.error("[Projector]   WATERMeDIA: Android Bridge（modid={}）", ANDROID_BRIDGE_MODID);
             LOGGER.error("[Projector] ⚠ 不装它会导致游戏崩溃：WaterMedia 在安卓上必须靠这个兼容层做解码，");
-            LOGGER.error("[Projector] ⚠ 缺了它，只要画面里出现要播放的视频（本模组的视频控件也算），游戏就可能直接崩掉。");
+            LOGGER.error("[Projector] ⚠ 缺了它，你就等着美美崩溃吧！我们会在Minecraft Crash Report中嘲讽你的！你这是典型的安卓环境，安卓设备，安卓报错，安卓崩溃！！！！！！！！");
             LOGGER.error("[Projector] 请立刻安装该兼容模组后重启游戏（三个要一起装：本模组 + WaterMedia + 兼容模组）。");
+            LOGGER.error("[Projector] WATERMeDIA：Android Bridge MC百科链接：https://www.mcmod.cn/class/31206.html");
             LOGGER.error("================================================================");
         } catch (Throwable t) {
             // 纯提示逻辑，任何异常都不该影响启动。
@@ -100,11 +116,14 @@ public class Projector {
             if (!isModLoaded("mcef")) return;                   // 没装 MCEF：网页控件本来就不用它
             if (isModLoaded(MCEF_ANDROID_BRIDGE_MODID)) return; // 有兼容层：交给它兜底
             LOGGER.error("================================================================");
-            LOGGER.error("[Projector] 在 Android 上检测到 MCEF，但没有检测到它的安卓兼容模组：");
+            LOGGER.error("投影仪 · 来自蓝色大肥鱼的嘲讽 / Projector · Missing-piece taunt");
+            LOGGER.error("[Projector] 恭喜你，成功把游戏搞崩了🎉🎉🎉");
+            LOGGER.error("[Projector] 在 Android 上检测到MCEF，但没有检测到它的安卓兼容模组：");
             LOGGER.error("[Projector]   MCEF: Android Bridge（modid={}）", MCEF_ANDROID_BRIDGE_MODID);
-            LOGGER.error("[Projector] ⚠ 不装它会导致游戏崩溃：MCEF 在安卓上加载 Chromium 原生库会失败，");
-            LOGGER.error("[Projector] ⚠ 而 MCEF 自己的初始化没有异常保护，失败时会把整个游戏一起带走。");
-            LOGGER.error("[Projector] 请安装该兼容模组，或先把 MCEF 移出 mods 目录，然后重启游戏。");
+            LOGGER.error("[Projector] ⚠ 不装它会导致游戏崩溃：MCEF 在 Android 上无法加载 Chromium 原生库");
+            LOGGER.error("[Projector] ⚠ 缺了它，你就等着美美崩溃吧！你这是典型的安卓环境，安卓设备，安卓报错，安卓崩溃！！！！！！！！");
+            LOGGER.error("[Projector] 请立刻安装该兼容模组后重启游戏（三个要一起装：本模组 + MCEF + 兼容模组）。");
+            LOGGER.error("[Projector] MCEF：Android Bridge MC百科链接：https://music.163.com/#/song?id=5221167");
             LOGGER.error("================================================================");
         } catch (Throwable t) {
             // 纯提示逻辑，任何异常都不该影响启动。

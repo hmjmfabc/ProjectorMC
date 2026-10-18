@@ -124,6 +124,68 @@ public final class MusicPlayer {
         startSegment(ownerKey, track, position, attenuation, volume, startMs, envelope);
     }
 
+    /**
+     * 【27.2.3-hotfix-142】跳进度：**优先在已经打开的流里快进**，实在不行才重开流。
+     *
+     * <h2>为什么（用户实测：服务器上拖进度条 / 暂停继续要卡好几秒）</h2>
+     * 以前跳进度一律走 {@link #play}：重开一整段 —— 网易云要重新解析地址 + 重新联网 +
+     * 重建解码器 + 重新预填，几秒就没了（本地文件感觉不出来，所以单人存档一直没暴露）。
+     * 现在先试 {@link MusicAudioStream#seekForwardTo(long)}：
+     * 同一首歌、正在播、目标在**当前解码位置之后且在窗口内** ⇒ 接着往下解、丢掉不要的样本，
+     * 玩家几乎立刻听到新位置。往回跳、或跳得太远（HTTP 顺序流只能往前）才回退重开流。
+     *
+     * @param ownerKey 发起动作的控件
+     * @param track    歌曲
+     * @param targetMs 目标位置（毫秒）
+     * @return true = 已在本流内定位（**没有**重开流）；false = 调用方应回退到 {@link #play}
+     */
+    public boolean seekWithinStream(String ownerKey, MusicTrack track, Vec3 position, float attenuation,
+                                    double volume, long targetMs, MusicEnvelope envelope) {
+        MusicAudioStream current = this.stream;
+        // 只能「同一首歌、正放着、目标在当前解码位置之后、且在窗口内」这四种情况走快进。
+        // 窗口取 30 秒：再远的话，丢弃的样本比重新建连接还慢。
+        if (current == null || !isActive() || track == null || this.track == null) return false;
+        if (!track.key().equals(this.track.key())) return false;
+        if (targetMs <= current.decodedMs() || targetMs - current.decodedMs() > SEEK_IN_STREAM_WINDOW_MS) {
+            return false;
+        }
+        if (!current.seekForwardTo(targetMs)) return false;
+
+        // 段落锚点必须跟着挪，否则「听到的位置」会从旧起点继续算 ⇒ 进度条与声音错开
+        this.ownerKey = ownerKey;
+        this.position = position;
+        this.attenuation = attenuation;
+        this.volume = volume;
+        this.envelope = envelope != null ? envelope : this.envelope;
+        this.segmentStartMs = Math.max(0L, targetMs);
+        this.segmentStartNanos = System.nanoTime();
+        this.pausedNanos = 0L;
+        this.pausedAtNanos = 0L;
+        if (handle != null) {
+            handle.execute(ch -> ch.setVolume((float) volume));
+        }
+        // 【27.2.4-200 修】光把「我们的队列」清空还不够：MC/AL 那边已经收下的 4 个 1 秒
+        // 缓冲仍然会照旧播完 ⇒ 快进之后还会继续听到最多 ~4 秒的旧位置，而进度条已经跳到目标，
+        // 而且之后一直比声音超前一个队列深度（进度条/歌词全部跟着偏）。
+        // 这里把声道停一下再重新挂上同一条流：AL 侧缓冲被丢弃，anchor 与第一声对齐。
+        ChannelAccess.ChannelHandle ch2 = handle;
+        MusicAudioStream streamForRestart = current;
+        if (ch2 != null && streamForRestart != null) {
+            ch2.execute(Channel::stop);
+            // attachBufferStream 无返回值（NeoForge 1.21.1 的 ChannelHandle.execute 是 void）
+            ch2.execute(ch -> ch.attachBufferStream(streamForRestart));
+            ch2.execute(Channel::play);
+            // anchor 从「真的重新出声」这一刻算（预填已经在流里了，通常立刻出声）
+            this.segmentStartNanos = System.nanoTime();
+        }
+        Projector.LOGGER.info("[Projector][音乐] 跳进度 {}ms：在已打开的流里快进（没有重开流）",
+                targetMs);
+        return true;
+    }
+
+    /** 流内快进的最大跨度（毫秒）。超过它就重开流更划算（要么网络、要么丢样本的 CPU）。 */
+    private static final long SEEK_IN_STREAM_WINDOW_MS = 30_000L;
+
     /** 内部续播：**不重置** attempts/resumes，否则「上限」形同虚设（27.1.1 实测过）。 */
     private void resumeInternal(String ownerKey, MusicTrack track, Vec3 position, float attenuation,
                                 double volume, long startMs, MusicEnvelope envelope) {
@@ -146,7 +208,10 @@ public final class MusicPlayer {
         this.volume = volume;
         this.error = "";
         this.state = State.LOADING;
-        this.resumes = 0;
+        // 【27.2.4-200 修】**不许在这里清 resumes**：续播（resumeInternal）走的正是本方法，
+        // 清一次就会让 tick() 里 `resumes >= MAX_RESUME` 那道「反复被回收就放弃」的闸门
+        // 永远触发不了 ⇒ 声道被引擎反复回收时会无上限重开流（网易云还要重新联网取地址）。
+        // 计数只在 play()（用户真正起播）里清零。
 
         Thread loader = new Thread(() -> loadAndStart(token, track, startMs), "Projector-Music-Load");
         loader.setDaemon(true);
@@ -212,6 +277,12 @@ public final class MusicPlayer {
                 channel.linearAttenuation(range);
                 channel.attachBufferStream(audioStream);
                 channel.play();
+                // 【27.2.1-hotfix-140】时间锚点从「开始加载」改到「真的出声」：
+                //   网易云要先联网打开流、再预填 4 秒缓冲，这一步可能好几秒；
+                //   以前那几秒也算进「已经播到哪」⇒ 一开播就比听到的位置超前几秒，
+                //   而控件那边的进度是游戏刻推算的 ⇒ 两边立刻超过容差 ⇒ 重开这一段 ⇒
+                //   网易云又要重新联网 ⇒ 玩家听到的就是「断断续续 + 进度跳跃」。
+                markAudible();
             });
         });
     }
@@ -267,10 +338,14 @@ public final class MusicPlayer {
             currentStream.close();
         }
         stopping = false;
-        if (state != State.IDLE || !error.isEmpty()) {
+        // 【27.2.4-200 修】失败态不许在这里被抹掉：tick() 的放弃路径是
+        // `state = FAILED; error = "播放反复中断"; stop();` —— 以前 stop() 立刻清成
+        // IDLE + 空 error ⇒ MusicManager 的失败退避（只统计 FAILED）永远不记账，
+        // 玩家也看不到任何原因。现在只在「正常停止」时清。
+        if (state != State.FAILED && (state != State.IDLE || !error.isEmpty())) {
             state = State.IDLE;
             error = "";
-            }
+        }
     }
 
     // ---------------------------------------------------------------- 每 tick
@@ -399,6 +474,45 @@ public final class MusicPlayer {
     public MusicAudioStream stream() {
         return stream;
     }
+
+    /**
+     * 【27.2.1-hotfix-140】把「已经播到哪」的时钟锚在**真的出声**这一刻。
+     *
+     * <p>{@link #startSegment} 里设过一次（开始加载），但加载要联网 + 预填缓冲，
+     * 那段时间玩家其实什么都听不到；不重锚的话，播放位置会凭空超前一个加载时长。</p>
+     */
+    private void markAudible() {
+        this.segmentStartNanos = System.nanoTime();
+        this.pausedNanos = 0L;
+        this.pausedAtNanos = 0L;
+        // 【27.2.1-hotfix-144】通知外面「这一段真的开始出声了」：MusicManager 靠它
+        // 解除控件的「加载中」冻结（那期间进度条钉住不动）、并打一行可判定的日志。
+        // 【27.2.4-200 修】这里跑在**声音引擎线程**上（ChannelHandle.execute 的回调），
+        // 以前直接同步回调 ⇒ MusicManager 会在音频线程上遍历 PlaneCache / plane.widgets
+        // （普通 ArrayList，客户端线程随时在改）并写控件字段 ⇒ 竞争 + 卡音频线程。
+        // 现在只记一个标记，由 MusicManager.tick() 在客户端线程消费。
+        pendingAudibleOwner = this.ownerKey;
+    }
+
+    /** 待通知「已出声」的歌曲标识（声音引擎线程写，客户端线程取走）。 */
+    private static volatile String pendingAudibleOwner;
+
+    /** 【27.2.4-200】客户端线程取走「刚刚开始出声」的通知；没有则返回 null。 */
+    public static String takePendingAudible() {
+        String key = pendingAudibleOwner;
+        if (key != null) {
+            pendingAudibleOwner = null;
+        }
+        return key;
+    }
+
+    /** 兼容旧调用：注册回调（内部改为消费 {@link #takePendingAudible()}）。 */
+    public static void onAudible(java.util.function.Consumer<String> callback) {
+        audibleCallback = callback;
+    }
+
+    /** 旧回调（保留字段以兼容，实际不再从音频线程调用）。 */
+    private static volatile java.util.function.Consumer<String> audibleCallback;
 
     /**
      * 已经播到第几毫秒（**玩家听到的进度**）。

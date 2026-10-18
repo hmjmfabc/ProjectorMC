@@ -48,14 +48,34 @@ public final class GameDifficulty {
     }
 
     /** 该档位允许的最大搜索深度（还会被棋种自身的上限压一次）。 */
+    /**
+     * 极限档各棋种的搜索深度。
+     *
+     * <p>【27.2.4-200 修】以前这段 switch 的**选择器写的是 kindDepth（深度）**，
+     * 而 case 标签用的是 {@code GameKind} 的编号（TIC_TAC_TOE=0 / GO=3）——
+     * 围棋的 kindDepth 是 2，`case GameKind.GO` 永远打不到，实际走 default 拿到 6 层，
+     * 每步都把节点/时间预算烧光（还拖慢了整机）。现在按棋种判断。</p>
+     */
+    public static int extremeDepth(int kind) {
+        return switch (kind) {
+            case GameKind.TIC_TAC_TOE -> 9;      // 局面太小，直接搜到底
+            case GameKind.GO -> 3;               // 围棋分支因子极大，3 层就够
+            default -> 6;
+        };
+    }
+
     public static int maxDepth(int d, int kindDepth) {
+        return maxDepth(d, kindDepth, -1);
+    }
+
+    /**
+     * @param kind 棋种（{@link GameKind}）；{@code < 0} = 未知 ⇒ 极限档退回 kindDepth
+     */
+    public static int maxDepth(int d, int kindDepth, int kind) {
         return switch (clamp(d)) {
             case NORMAL -> Math.min(2, kindDepth);
-            case EXTREME -> Math.max(kindDepth, switch (kindDepth) {
-                case GameKind.TIC_TAC_TOE -> 9;      // 局面太小，直接搜到底
-                case GameKind.GO -> 3;
-                default -> 6;
-            });
+            // 未知棋种（调用方没传 kind）时沿用旧的「极限档至少 6 层」，保持与历史行为一致
+            case EXTREME -> Math.max(kindDepth, kind < 0 ? 6 : extremeDepth(kind));
             default -> kindDepth;
         };
     }

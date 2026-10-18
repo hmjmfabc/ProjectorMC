@@ -63,17 +63,15 @@ public final class LocalMedia {
 
     /** 支持导入的图片扩展名。 */
     public static final List<String> IMAGE_EXT = List.of("png", "jpg", "jpeg", "bmp", "gif", "tga");
-    /** 支持导入的视频扩展名。 */
     /**
      * 会被列进「视频」列表的扩展名。
      *
-     * <p>前三个（mjpg / mjpeg / zip）是模组<b>能直接播放</b>的格式；
-     * 其余是常见但模组解不了的格式，列出来是为了让玩家能在选择器里选中它们、
-     * 用「视频格式转换…」转成受支持的格式。</p>
+     * <p>【27.2.4-201】<b>不再包含 mjpg / mjpeg / zip</b>：内置逐帧解码器自 Build 112 起已下线，
+     * 列出来只会让玩家选中一个永远放不出来的文件。现在只列常见容器，
+     * 能不能放由 {@code MediaUploader.probeVideo}（唯一入口）当场判定。</p>
      */
     public static final List<String> VIDEO_EXT = List.of(
-            "mjpg", "mjpeg", "zip",
-            "mov", "avi", "mp4", "m4v", "mkv", "webm", "flv", "wmv", "3gp", "mpg", "mpeg", "gif");
+            "mov", "avi", "mp4", "m4v", "mkv", "webm", "flv", "wmv", "3gp", "mpg", "mpeg");
 
     public static Path gameDir() {
         return Minecraft.getInstance().gameDirectory.toPath();
@@ -236,6 +234,16 @@ public final class LocalMedia {
         List<Path> roots = new ArrayList<>();
         roots.add(mediaDir());
         roots.add(legacyMediaDir());
+        // 【27.2.1-hotfix-144 修「音乐播放键退出重进就失灵」】
+        //   玩家的本地音乐目录（<gamedir>/projector/musics）以前**不参与扫描**，
+        //   而控件存的是**内容哈希**。选歌时确实能放（MusicShare 会把它登记进内存表
+        //   REGISTERED），但那个登记**只活在本次启动**里 —— 重启游戏后 REGISTERED 是空的，
+        //   byHash(hash) 查不到这份文件 ⇒ 播放端报「本机还没有这份音频」⇒ 只能重新选一次歌
+        //   （重选会重新登记 + 重新上传）才恢复。玩家看到的就是
+        //   「退出重进存档后播放键失灵，必须重新上传一遍」。
+        //   把它加进扫描根目录，哈希索引就跨启动有效了。
+        //   ⚠ 音乐文件一般在 3~10 MB，低于 INLINE_HASH_MAX_BYTES，扫描里现算 SHA-1 很快。
+        roots.add(musicDir());
         for (Path root : roots) {
             if (!Files.isDirectory(root)) continue;
             try (Stream<Path> stream = Files.walk(root, 2)) {
@@ -246,7 +254,15 @@ public final class LocalMedia {
                             String name = p.getFileName().toString();
                             String ext = extension(name);
                             boolean video = VIDEO_EXT.contains(ext);
-                            if (!video && !IMAGE_EXT.contains(ext)) return;
+                            // 【27.2.1-hotfix-144】音频文件**也要进哈希索引**，但不能进
+                            // 「图片/视频选择」列表：
+                            //   · 只按扩展名放行（IMAGE/VIDEO）的话，本地音乐永远不会被索引
+                            //     ⇒ 重启后 byHash(哈希) 查不到 ⇒ 播放键失灵（要重新选歌才恢复）；
+                            //   · 所以这里额外放行音频，但把它标成 {@code video = true}
+                            //     （复用「不参与图片列表」这一位），只让 SHA-1 索引认它。
+                            boolean audio = AUDIO_EXT.contains(ext);
+                            if (!video && !IMAGE_EXT.contains(ext) && !audio) return;
+                            if (audio) video = true;
                             try {
                                 if (Files.size(p) == 0) return;
                             } catch (IOException e) {
@@ -314,6 +330,10 @@ public final class LocalMedia {
         // 就是扫描在渲染线程上跑了一秒多，而日志里一个字都没有。
         long ms = (System.nanoTime() - t0) / 1_000_000L;
         LAST_SCAN_MS = ms;
+        // 【160】把「这次扫描是谁做的」记下来（诊断 + 回归用）。
+        // 之前的回归写的是「调用 rescanAsyncIfStale 之后摘要计数没变」—— 那条**会假失败**：
+        // 后台线程很快跑完时计数当然变了。判据必须问「**哪个线程**做的」，而不是「有没有做」。
+        LAST_SCAN_THREAD_NAME = Thread.currentThread().getName();
         if (ms > MAX_SCAN_MS) {
             MAX_SCAN_MS = ms;
             MAX_SCAN_THREAD = Thread.currentThread().getName();
@@ -334,6 +354,14 @@ public final class LocalMedia {
     /** 已缓存的 SHA-1 是否还在（诊断/测试用）。 */
     static int digestCacheSize() {
         return DIGEST_CACHE.size();
+    }
+
+    /** 最近一次素材目录扫描是在哪个线程上跑的（诊断/回归用）。 */
+    private static volatile String LAST_SCAN_THREAD_NAME = "";
+
+    /** 见 {@link #LAST_SCAN_THREAD_NAME}（包内可见，给回归脚本用）。 */
+    static String lastScanThreadName() {
+        return LAST_SCAN_THREAD_NAME;
     }
 
     /** 真正做了多少次 SHA-1 计算（诊断/测试用：命中缓存不算）。 */
@@ -460,6 +488,13 @@ public final class LocalMedia {
     }
 
     /** 用 hash 取本地文件；服务端 hash（纯 SHA-1 十六进制）会在缓存目录里找。 */
+    /**
+     * 音频扩展名（与 {@code MusicTrack.AUDIO_EXT} 同一套）。
+     * <p>扫描时用它把音乐目录里的文件也纳入 SHA-1 索引（见 {@code rescan} 里的注释）。</p>
+     */
+    private static final java.util.Set<String> AUDIO_EXT = java.util.Set.of(
+            "mp3", "flac", "wav", "m4a", "aac");
+
     /** 「文件 SHA-1 -> 素材文件」索引（与 INDEX 的 "local:" 键并存）。 */
     private static final Map<String, MediaFile> BY_SHA1 = new java.util.concurrent.ConcurrentHashMap<>();
     /** 摘要缓存：避免每次重扫都重新读一遍文件。键 = 路径|大小|修改时间。 */

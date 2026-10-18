@@ -99,6 +99,30 @@ public class PlaneDialogScreen extends ProjectorScreen {
     // 布局
     // ------------------------------------------------------------------
 
+    // ---- 【27.2.3-hotfix-142 · 彩蛋】左上角版本号 HUD + 连点 7 次 ----
+    /** 连点计数（static：中途关掉对话框再打开也不重置，不然「连续点击」太难凑）。 */
+    private static int eggClicks;
+    /**
+     * 上一次点击的**墙钟**毫秒（{@code System.nanoTime} 折算）。
+     *
+     * <p>⚠ 这里**不能用游戏刻**：①打开 GUI 时游戏刻会停/变慢，计时不准；
+     * ②{@code ClientLevel} 为 null 时读出来是 0，会与「还没点过」的初值撞车，
+     * 于是每次点击都判定成「超时」⇒ 计数被反复清零 ⇒ 版本号点到手酸也不触发。
+     * 墙钟没有这两个毛病（这一版修的就是这条）。</p>
+     */
+    private static long eggLastClickMs;
+    /** 两次点击最多隔多少毫秒还算「连续」（1500 ms）。 */
+    private static final long EGG_TIMEOUT_MS = 1500L;
+    /** 命中框的容差（像素）：手机上手指点不准，给一点余量。 */
+    private static final int EGG_HIT_SLOP = 3;
+    /** 触发彩蛋需要的点击次数（用户指定：7 次）。 */
+    private static final int EGG_CLICKS_NEEDED = 7;
+    /** 版本 HUD 的落点（render 里记下来，mouseClicked 用它做命中判定 —— 与画出来的完全同源）。 */
+    private int eggHudX = -1;
+    private int eggHudY = -1;
+    private int eggHudW;
+    private int eggHudH;
+
     /** 信息区每一行的行高。 */
     private static final int ROW_H = 12;
     /** 信息区与「命名」区之间的间距。 */
@@ -147,9 +171,18 @@ public class PlaneDialogScreen extends ProjectorScreen {
         return rows;
     }
 
-    /** 信息区第一行的 y。 */
+    /** 左上角版本 HUD 占掉的高度（【彩蛋】那一行）。 */
+    private static final int HUD_H = 14;
+
+    /**
+     * 信息区第一行的 y。
+     * <p>【27.2.3-hotfix-142】往下让了 {@link #HUD_H} 一行：左上角现在是版本号 HUD，
+     * 而信息区原来正好也从 {@code py + 8} 开始 ⇒ 两段文字会叠在一起（画的叠、点的也叠）。
+     * 让位高度从这里走，{@code init()} 的按钮坐标与 {@code render()} 的画字用的是同一个数，
+     * 所以不会出现「按钮跳了一行、文字没跳」。</p>
+     */
     private int infoTop(int py) {
-        return py + 8;
+        return py + 8 + HUD_H;
     }
 
     /** 「命名」输入框的 y（信息区之后）。 */
@@ -334,7 +367,8 @@ public class PlaneDialogScreen extends ProjectorScreen {
 
             @Override
             public void onMoved(Widget widget, double newX, double newY) {
-                double[] c = CanvasWidgetView.clampPos(newX, newY, widget.w, widget.h,
+                // 【27.2.1-hotfix-144】夹取按「旋转后的包围盒」算（180° 时才拖得动）
+                double[] c = CanvasWidgetView.clampPos(widget, newX, newY,
                         plane.width, plane.height);
                 newX = c[0];
                 newY = c[1];
@@ -359,7 +393,8 @@ public class PlaneDialogScreen extends ProjectorScreen {
                 double nh = Math.max(1.0, Math.min(newH, Math.max(16.0, plane.height * 2.0)));
                 widget.w = nw;
                 widget.h = nh;
-                double[] c = CanvasWidgetView.clampPos(widget.x, widget.y, nw, nh,
+                // 尺寸已改，夹取按新尺寸 + 旋转后的包围盒算
+                double[] c = CanvasWidgetView.clampPos(widget, widget.x, widget.y,
                         plane.width, plane.height);
                 widget.x = c[0];
                 widget.y = c[1];
@@ -513,6 +548,9 @@ public class PlaneDialogScreen extends ProjectorScreen {
         int px = pad;
         int py = pad;
 
+        // 【彩蛋】左上角版本号 HUD：连点 7 次触发（命中框就是这里记下来的那几个数）
+        renderVersionHud(gfx, px + 8, py + 4);
+
         // 信息区：行数与 init() 用的是同一份 infoRows()
         List<Object[]> rows = infoRows();
         int y = infoTop(py);
@@ -545,6 +583,136 @@ public class PlaneDialogScreen extends ProjectorScreen {
             label(gfx, "\u7a97\u53e3\u592a\u77ee\uff1a\u6709 " + skippedButtons
                             + " \u4e2a\u6309\u94ae\u672a\u663e\u793a\uff0c\u8bf7\u62c9\u5927\u7a97\u53e3\u6216\u8c03\u5c0f GUI \u7f29\u653e",
                     px + 8, this.height - pad - 24, 0xFFFFAA55);
+        }
+    }
+
+    /**
+     * 【彩蛋】画左上角的版本号，并记下它的命中框。
+     *
+     * <p>为什么把落点存成字段：{@code mouseClicked} 要判「点到的是不是版本号」，
+     * 而命中框必须与画出来的那一个像素不差 —— 两处各算一遍迟早对不上（本项目在
+     * 画布坐标上吃过这个亏）。所以这里算一次、记下来，点的时候直接用。</p>
+     */
+    private void renderVersionHud(GuiGraphics gfx, int x, int y) {
+        Minecraft mc = Minecraft.getInstance();
+        // 连点中途超时 ⇒ 在这里就把计数归零（比等到下一次点击再归零更准：
+        // 玩家看得到「刚才那几下白点了」）
+        if (eggClicks > 0 && nowMs() - eggLastClickMs > EGG_TIMEOUT_MS) {
+            eggClicks = 0;
+        }
+        String text = "Projector " + top.hmjmfabc.projector.Projector.BUILD_TAG;
+        gfx.drawString(mc.font, text, x, y, TEXT_ACCENT, true);
+        this.eggHudX = x - EGG_HIT_SLOP;
+        this.eggHudY = y - EGG_HIT_SLOP;
+        this.eggHudW = mc.font.width(text) + EGG_HIT_SLOP * 2;
+        this.eggHudH = 9 + EGG_HIT_SLOP * 2;
+        // 点到一半时就在旁边写一行进度：不然玩家根本不知道「刚才那几下算不算」
+        if (eggClicks > 0) {
+            gfx.drawString(mc.font, "  " + eggClicks + "/" + EGG_CLICKS_NEEDED,
+                    x + mc.font.width(text), y, 0xFFFFAA55, true);
+        }
+    }
+
+    /** 点到了版本号吗（用 render 记下来的那份命中框，已含容差）。 */
+    private boolean hitVersionHud(double mx, double my) {
+        return eggHudX >= 0
+                && mx >= eggHudX && mx <= eggHudX + eggHudW
+                && my >= eggHudY && my <= eggHudY + eggHudH;
+    }
+
+    /** 最后一次点击的坐标（只用于日志：判断「点没点中」）。 */
+    private static double lastClickX, lastClickY;
+
+    /** 墙钟毫秒（单调，不受游戏刻与暂停影响）。 */
+    private static long nowMs() {
+        return System.nanoTime() / 1_000_000L;
+    }
+
+    @Override
+    public boolean mouseClicked(double mx, double my, int button) {
+        // 只在左键、且真的点在版本号上时计数（右键/其它键不参与）
+        if (button == 0 && hitVersionHud(mx, my)) {
+            lastClickX = mx;
+            lastClickY = my;
+            try {
+                countEggClick();
+            } catch (Throwable t) {
+                // 兜底：计数逻辑出任何问题都不许影响玩家继续点（也不许把异常抛进事件链）
+                top.hmjmfabc.projector.Projector.LOGGER.warn("[Projector] 彩蛋点击处理异常（已忽略）：{}",
+                        String.valueOf(t));
+            }
+            return true;                    // 吃掉这一次点击，别让底下的控件也响应
+        }
+        return super.mouseClicked(mx, my, button);
+    }
+
+    /**
+     * 连点计数。间隔超过 {@link #EGG_TIMEOUT_MS} 就重新数（用墙钟，不用游戏刻）。
+     *
+     * <p>顺手给了「越点越明显」的反馈，免得玩家点着点着以为界面没反应：
+     * 点 3 下显示进度、点 4 下给一句提示、点 6 下明说要触发什么。</p>
+     */
+    private void countEggClick() {
+        // 【为什么每一步都单独 try/catch】这一段跑在「点击事件」里，任何一步抛异常都会
+        // 让这次点击半途而废；如果异常发生在 setScreen 之前，玩家看到的就是
+        // 「版本号点不动了」（本轮用户报的就是这个）。所以：计数先加、再各自做事，
+        // 谁出问题都只记一行日志，绝不影响下一次点击。
+        try {
+            long now = nowMs();
+            if (eggLastClickMs == 0L || now - eggLastClickMs > EGG_TIMEOUT_MS) {
+                eggClicks = 0;
+            }
+            eggLastClickMs = now;
+            eggClicks++;
+        } catch (Throwable t) {
+            top.hmjmfabc.projector.Projector.LOGGER.warn("[Projector] 彩蛋计数异常（已忽略）：{}",
+                    String.valueOf(t));
+            return;
+        }
+
+        int n = eggClicks;
+        // 只在第 1 次与触发那一次打 info（免得连点时刷屏）：这两行足以判断
+        // 「点击到底有没有到达版本号」，也就是本轮 bug 的判据
+        if (n == 1) {
+            top.hmjmfabc.projector.Projector.LOGGER.info(
+                    "[Projector] 彩蛋：版本号被点了第 1 下（命中框 x={} y={} w={} h={}，点击 x={} y={}）",
+                    eggHudX, eggHudY, eggHudW, eggHudH, (int) lastClickX, (int) lastClickY);
+        }
+
+        if (n >= EGG_CLICKS_NEEDED) {
+            // 触发：把状态一次清干净，保证「下一轮还能从头点」（本轮 bug 的另一半：
+            // 只在成功分支里清计数，一旦别处抛异常就会卡在半路）
+            eggClicks = 0;
+            eggLastClickMs = 0L;
+            try {
+                Minecraft.getInstance().setScreen(new EasterEggScreen());
+                top.hmjmfabc.projector.Projector.LOGGER.info(
+                        "[Projector] 彩蛋已触发（版本号连点 {} 次）", EGG_CLICKS_NEEDED);
+            } catch (Throwable t) {
+                top.hmjmfabc.projector.Projector.LOGGER.warn("[Projector] 彩蛋界面打开失败：{}",
+                        String.valueOf(t));
+            }
+            return;
+        }
+
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player == null) return;
+            String hint;
+            if (n <= 2) {
+                hint = "Projector " + top.hmjmfabc.projector.Projector.BUILD_TAG
+                        + "（点 " + n + "/" + EGG_CLICKS_NEEDED + "）";
+            } else if (n <= 5) {
+                hint = "别点了，这后面什么都没有（" + n + "/" + EGG_CLICKS_NEEDED + "）";
+            } else {
+                hint = "……你再点一下试试（" + n + "/" + EGG_CLICKS_NEEDED + "）";
+            }
+            // true = actionbar（物品栏上方那行），不刷聊天栏
+            mc.player.displayClientMessage(Component.literal(hint), true);
+        } catch (Throwable t) {
+            // 提示发不出去不影响计数：下一次点击照样 +1（以前这里是致命的）
+            top.hmjmfabc.projector.Projector.LOGGER.debug("[Projector] 彩蛋提示发送失败：{}",
+                    String.valueOf(t));
         }
     }
 

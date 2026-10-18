@@ -31,6 +31,11 @@ public final class VideoControls {
      *
      * <p>本地先乐观生效（玩家立刻看到按钮变了），再发动作给服务端；
      * 服务端是权威，广播回来会覆盖成一致的状态。</p>
+     *
+     * <p>⚠【27.2.4-201】暂停时<b>必须把「我这一端此刻的真实位置」一起发过去</b>：
+     * 服务端手里的视频控件没有真实时长（外部解码器的视频 {@code frameCount=1/fps=10} ⇒
+     * 它算出来的时长只有 100 毫秒），拿自己的锚点去冻结位置会得到一个 0~99 毫秒的假位置 ——
+     * 玩家看到的就是「一暂停，进度条就掉回开头」。所以发 {@code ms}，让服务端按它落点。</p>
      */
     public static void toggleInWorld(top.hmjmfabc.projector.common.Plane plane,
                                      VideoWidget w) {
@@ -39,16 +44,26 @@ public final class VideoControls {
         }
         long now = System.currentTimeMillis();
         boolean next = !w.paused;
+        // 先取「翻转前」的位置：paused 一翻，positionMs 就变成冻结值了
+        long positionMs = w.positionMs(now);
+        long durationMs = w.durationMs();
         w.setPausedAt(next, now);
         reveal(w.id, now);
         net.minecraft.nbt.CompoundTag args = new net.minecraft.nbt.CompoundTag();
         args.putBoolean("value", next);
+        if (next) {
+            // 暂停：把真实位置与真实时长交给服务端（它靠这两个值冻结/广播）
+            args.putLong("ms", Math.max(0L, positionMs));
+            if (durationMs > 0) {
+                args.putLong("durationMs", durationMs);
+            }
+        }
         net.neoforged.neoforge.network.PacketDistributor.sendToServer(
                 new top.hmjmfabc.projector.network.Payloads.WidgetAction(plane.id, w.id, "toggle", args));
         top.hmjmfabc.projector.Projector.LOGGER.info(
-                "[Projector][视频] 世界内点击播放键 平面={} 控件={} {}→{}",
+                "[Projector][视频] 世界内点击播放键 平面={} 控件={} {}（位置 {}ms / {}ms）",
                 plane.id.toString().substring(0, 8), w.id.toString().substring(0, 8),
-                next ? "播放" : "暂停", next ? "（暂停→播放）" : "（播放→暂停）");
+                next ? "播放→暂停" : "暂停→播放", Math.max(0L, positionMs), durationMs);
     }
 
     /** 世界内点进度条 → 跳进度（按**毫秒**发，服务端不需要知道时长也能跳对）。 */

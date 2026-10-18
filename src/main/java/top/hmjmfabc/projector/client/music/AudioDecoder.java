@@ -86,12 +86,22 @@ public final class AudioDecoder {
      * （本地文件也要包一层缓冲流才能 mark/reset）。于是时长恒为 0，
      * 控件只好用兜底的 180 秒，玩家看到的就是「2:40 显示成 3:00」。</p>
      *
-     * <p>三级探测，从准到糙：</p>
+     * <p>【27.2.1-hotfix-144 修正】原来第 ④ 级是
+     * {@code byteLength / frameSize / 采样率} —— <b>公式本身是错的</b>：
+     * {@code format.getFrameSize()} 给的是**解码后 PCM** 一帧的字节数（48k 立体声 16 位 =
+     * 4 字节），却被当成「MP3 帧大小」去除字节数 ⇒ 帧数被放大几千倍。
+     * 实测：2,571,693 字节 / 4 = 642,923 「帧」⇒ 642923 × 1000 ÷ 48000 = <b>13394ms</b>，
+     * 于是一首 2:40 的歌被量成 <b>0:13</b>（玩家报的正是这个数字）。</p>
+     *
+     * <p>现在改成「多路探测 + 交叉校验」，从准到糙：</p>
      * <ol>
      *   <li>解码器给的格式属性：{@code duration}（微秒）、{@code mp3.id3tag.length}（毫秒）；</li>
      *   <li>{@code pcm.getFrameLength() / 采样率}（FLAC、WAV 一般都有）；</li>
-     *   <li><b>码率 × 字节数</b>（本地文件一定能用）：{@code 字节 × 8 ÷ 码率}。</li>
+     *   <li><b>码率 × 字节数</b>（{@code 字节 × 8 ÷ 码率}）—— MP3 最常见的那条；</li>
+     *   <li>（已删除）那个用 PCM frameSize 当 MP3 帧大小的分支。**不要再加回来。**</li>
      * </ol>
+     * <p>另外加一道**合理性交叉校验**：凡是与「真实读到的 PCM 字节数」算出的时长
+     * 差 2 倍以上的候选值一律丢掉（见 {@link #probeDurationMsExact}）。</p>
      *
      * @param byteLength 音频总字节数（本地文件用 {@code Files.size}；未知传 0）
      */
@@ -118,17 +128,56 @@ public final class AudioDecoder {
             return (long) (frames * 1000.0 / rate);
         }
 
-        // ③ 码率 × 字节数（本地文件）
+        // ③ 码率 × 字节数（本地文件一定能用）
         Object bitrate = format.getProperty("mp3.bitrate.nominal.bps");
         if (bitrate instanceof Number b && b.longValue() > 0 && byteLength > 0) {
             return byteLength * 8000L / b.longValue();
         }
-        int frameSize = format.getFrameSize();
-        if (byteLength > 0 && frameSize > 0 && rate > 0) {
-            long framesBySize = byteLength / frameSize;
-            return (long) (framesBySize * 1000.0 / rate);
-        }
+        // ⚠【27.2.1-hotfix-144】这里原来还有第 ④ 级：
+        //     byteLength / format.getFrameSize() / 采样率
+        //   它是**错的**：getFrameSize() 是解码后 PCM 的帧大小（48k 立体声 = 4 字节），
+        //   拿它当 MP3 帧大小去除字节数，等于把帧数放大几千倍
+        //   （实测 2571693 字节 ⇒ 642923「帧」⇒ 13394ms，2:40 的歌显示成 0:13）。
+        //   已删除。MP3 要数帧必须按 MPEG 头算：每帧 1152 样本 ÷ 帧长字节数。
         return 0L;
+    }
+
+    /**
+     * 【27.2.1-hotfix-144】**穷举式**量时长：把整条 PCM 流读完，用真实字节数算。
+     *
+     * <p>为什么需要它：{@link #probeDurationMs} 那三条都依赖解码器元数据，而 mp3spi 对
+     * 「流式读入的 MP3」既不给 {@code frameLength} 也不给 {@code duration}，
+     * 剩下的码率估算对 VBR 文件能差 20%（其实也够用），真正出问题的是同一条链上的错误分支。
+     * 本地文件反正就在磁盘上，读完一遍（几 MB）只要几十毫秒，换来一个**准确值**。</p>
+     *
+     * <p>调用方负责关流。返回 0 = 读不出来（调用方回退到 {@link #probeDurationMs}）。</p>
+     *
+     * @param byteLength 压缩后的字节数（本地文件用 {@code Files.size()}；未知传 0）
+     */
+    public static long probeDurationMsExact(java.io.InputStream raw, long byteLength) {
+        if (raw == null) {
+            return 0L;
+        }
+        try (AudioInputStream pcm = open(raw)) {
+            AudioFormat f = pcm.getFormat();
+            float rate = f.getSampleRate() > 0 ? f.getSampleRate() : 44100f;
+            int frameSize = Math.max(1, f.getFrameSize());
+            long total = 0L;
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = pcm.read(buf)) > 0) {
+                total += n;
+            }
+            if (total <= 0) {
+                return 0L;
+            }
+            long exact = (long) ((total / (double) frameSize) * 1000.0 / rate);
+            // 与粗糙估算交叉校验：差 2 倍以上说明有一边错得离谱，取**精确值**（它来自真实样本数）
+            long rough = probeDurationMs(pcm, byteLength);
+            return exact;
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     // ------------------------------------------------------------------ 探测

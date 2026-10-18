@@ -24,6 +24,7 @@ import top.hmjmfabc.projector.common.widget.Widget;
 import top.hmjmfabc.projector.common.widget.Widgets;
 import top.hmjmfabc.projector.server.MediaStore;
 import top.hmjmfabc.projector.server.OutboundMeter;
+import top.hmjmfabc.projector.common.PlaneDistance;
 import top.hmjmfabc.projector.server.PlanePermissions;
 import top.hmjmfabc.projector.server.ProjectorData;
 import top.hmjmfabc.projector.server.Sanitize;
@@ -80,8 +81,27 @@ public final class ServerNetHandler {
             return System.currentTimeMillis() - startedAt > 300_000L;
         }
 
+        /** 【27.2.4-200】上传总长的**绝对**上限：再大的会话直接不建（防止 int 窄化/OOM）。 */
+        private static final long MAX_UPLOAD_ABSOLUTE_BYTES = 512L * 1024 * 1024;
+
+        /**
+         * 把客户端声明的总长夹成一个可以安全分配的长度。
+         *
+         * <p>【为什么必须有这道闸门】以前这里是 {@code (int) head.totalSize()}：
+         * 客户端报 3_000_000_000 就会窄化成负数 ⇒ {@code new BitSet/byte[]} 抛
+         * NegativeArraySizeException；报 2_147_483_600 就会让服务端真的去分配 2 GB。
+         * 而配额上限在集成服务器/配置为 0 时是 {@code Long.MAX_VALUE}，等于没有上限。</p>
+         */
+        private static int safeSize(Payloads.MediaUpload head) {
+            long total = head.totalSize();
+            if (total <= 0 || total > MAX_UPLOAD_ABSOLUTE_BYTES) {
+                return 0;                 // 0 = 非法会话：后续分片一律按越界拒绝
+            }
+            return (int) total;
+        }
+
         UploadSession(Payloads.MediaUpload head) {
-            this(head, (int) head.totalSize());
+            this(head, safeSize(head));
         }
 
         private UploadSession(Payloads.MediaUpload head, int size) {
@@ -129,6 +149,53 @@ public final class ServerNetHandler {
                 }
             }
 
+            // 【27.2.2-160】「方块被挖掉又搭回来」⇒ **复活旧平面**，不要新建。
+            //
+            // 老逻辑只认「这个坐标在不在平面的方块集合里」。而挖掉一块方块时，
+            // onBlockBreak 会把那个坐标从平面的方块集合里删掉 ⇒ 玩家把墙补回来、
+            // 对着新方块按 U 时精确命中落空 ⇒ **新建一个空平面**，
+            // 原来那些控件看着就像"消失"了（其实还挂在旧平面上，只是再也没法选中）。
+            //
+            // 判据按用户口径「从所在方块改成看控件」：同一朝向、落在平面的世界包围盒里
+            // （Plane.bounds() 自带 1.25 格余量）、**并且有控件** ⇒ 就地按新的命中重新生长。
+            //
+            // ⚠【161 修】复活的正确做法：**沿用旧平面的画布坐标系**重建方块面。
+            //   ① 只搬几何（内容一个字段都不动）；
+            //   ② 坐标系一个字段都不能重算 —— 矩形是从**准心命中的那一格**往外一圈圈扩的
+            //      （Plane.build 里的 growEdge），换个方块按 U，长出来的矩形范围可能不同
+            //      （sameBlockOnly 遇到别的材质就停、有洞就在洞那一列停）⇒ 矩形最小角换了
+            //      ⇒ canvasOffset 重算 ⇒ **整张平面连着控件在世界上平移几格**
+            //      （玩家实测：方向与格数跟方块所在位置有关）。
+            //   所以 build 的最后一个参数传 revivable 自己，让它当「坐标系提供者」。
+            Plane revivable = findRevivablePlane(data, dim, pos, Direction.byName(payload.face()), player);
+            if (revivable != null) {
+                TargetPicker.FaceHit again = resolveHit(level, pos, payload);
+                if (again != null) {
+                    int before = revivable.widgets.size();
+                    net.minecraft.world.phys.Vec3 o0 = revivable.canvas().originWorld();
+                    Plane rebuilt = Plane.build(level, dim, again,
+                            ProjectorConfig.INSTANCE.maxPlaneBlocks.get(), revivable);
+                    revivable.absorbFromRebuild(rebuilt);
+                    // 物理不变量：画布原点在世界里**一个毫米都不许动**（这是上一个 bug 的签名）。
+                    net.minecraft.world.phys.Vec3 o1 = revivable.canvas().originWorld();
+                    double moved = Math.abs(o1.x - o0.x) + Math.abs(o1.y - o0.y) + Math.abs(o1.z - o0.z);
+                    if (moved > 1.0e-6) {
+                        Projector.LOGGER.error("[Projector] 复活后画布原点移动了 {} 格！平面 {} "
+                                        + "的内容会整体跟着偏移 —— 坐标系没有被沿用",
+                                moved, revivable.id.toString().substring(0, 8));
+                    }
+                    data.rebuildIndex(dim);
+                    data.markDirty();
+                    broadcastPlane(level, revivable);
+                    sendSync(player, level, revivable);
+                    Projector.LOGGER.info("[Projector] 平面 {} 的方块被挖掉又补回，已就地复活"
+                                    + "（保留 {} 个控件，现有 {} 个方块面，画布 {}x{} 单位，原点移动={}）",
+                            revivable.id.toString().substring(0, 8), before, revivable.blockCount(),
+                            revivable.width, revivable.height, moved);
+                    return;
+                }
+            }
+
             if (data.countIn(dim) >= ProjectorConfig.INSTANCE.maxPlanesPerWorld.get()) {
                 player.displayClientMessage(Component.translatable("projector.msg.too_many_planes"), true);
                 return;
@@ -150,6 +217,71 @@ public final class ServerNetHandler {
         });
     }
 
+    /** 复活判定允许的额外距离（格）。见 {@link #canRevivePlane} 里关于「0 = 不限」的提醒。 */
+    public static final double REVIVE_RANGE = 0.5;
+
+    /**
+     * 【27.2.2-160】**能不能把这块方块算回那个旧平面**（纯函数，便于脚本验证）。
+     *
+     * <p>用它的场合：平面的方块被挖掉又补回来 —— 旧平面还在（控件都在），
+     * 但它的方块集合里已经没有这个坐标了。这时必须复用它，而不是新建一个空平面。</p>
+     *
+     * <p>三条判据：①同一朝向；②落在平面的世界包围盒里（{@code Plane.bounds()} 自带 1.25 格余量，
+     * 所以"补回来的那一块"以及紧挨着的那一块都算）；③**有控件**（用户口径：
+     * 判据从"所在方块"改成"上面的控件"—— 空平面没有复活的必要，新建即可，反正没内容）。</p>
+     *
+     * @param centerX/centerY/centerZ 被点击方块的中心（世界坐标）
+     */
+    public static boolean canRevivePlane(Plane plane, Direction face,
+                                         double centerX, double centerY, double centerZ) {
+        if (plane == null || face == null || plane.face != face) {
+            return false;
+        }
+        if (plane.widgets == null || plane.widgets.isEmpty()) {
+            return false;
+        }
+        if (plane.blocks == null || plane.blocks.isEmpty()) {
+            return false;                 // 一个方块都不剩的平面早就该被删掉了
+        }
+        // ⚠ 这里的 range **不能给 0**：PlaneDistance.withinRange 的约定是「0 = 不限」
+        //   （0 会让**任意远处**的平面都算命中 ⇒ 一块新墙会把很远的旧平面"吸"过来）。
+        //   包围盒本身已经有 1.25 格 padding，所以 0.5 的实际含义是
+        //   「补回来的那一块，以及紧挨着的那一块」，再多就不认。
+        return PlaneDistance.withinRange(plane, centerX, centerY, centerZ, REVIVE_RANGE);
+    }
+
+    /**
+     * 找出「该被复活」的那个旧平面：满足 {@link #canRevivePlane} 且**玩家有权改它**
+     * （同朝向里取最近的那个；离得远的平面不该被这块方块"吸"过来）。
+     */
+    @Nullable
+    private static Plane findRevivablePlane(ProjectorData data, ResourceLocation dim, BlockPos pos,
+                                            @Nullable Direction face, ServerPlayer player) {
+        if (face == null) {
+            return null;
+        }
+        double cx = pos.getX() + 0.5, cy = pos.getY() + 0.5, cz = pos.getZ() + 0.5;
+        Plane best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Plane p : data.planesIn(dim)) {
+            if (!canRevivePlane(p, face, cx, cy, cz)) {
+                continue;
+            }
+            // 动别人的平面 = 改内容：内容保护开着时只有管理员/创建者能改
+            if (!PlanePermissions.canEditContent(p, player)) {
+                continue;
+            }
+            double d = PlaneDistance.distanceToBox(cx, cy, cz,
+                    p.bounds().minX, p.bounds().minY, p.bounds().minZ,
+                    p.bounds().maxX, p.bounds().maxY, p.bounds().maxZ);
+            if (d < bestDist) {
+                bestDist = d;
+                best = p;
+            }
+        }
+        return best;
+    }
+
     @Nullable
     public static TargetPicker.FaceHit resolveHit(ServerLevel level, BlockPos pos, Payloads.CreatePlane payload) {
         Direction face = Direction.byName(payload.face());
@@ -161,6 +293,41 @@ public final class ServerNetHandler {
         if (shape.isEmpty()) return null;
         Vec3 hit = new Vec3(payload.hitX(), payload.hitY(), payload.hitZ());
         return TargetPicker.pickFromShapeAt(pos, shape, face, hit);
+    }
+
+    /** 管理员门槛（权限等级 2 = OP；与项目其它处同一口径）。 */
+    private static final int ADMIN_LEVEL = 2;
+
+    /**
+     * 【27.2.2】执行展示框绑定的指令（服务端权威）。
+     *
+     * <p>指令串存在控件数据里（**只有管理员能设置**，见 {@code setItemCommand} 分支）。
+     * 占位符替换走 {@code ItemWidget.renderCommand}，执行用服务端命令派发器 ——
+     * 权限、选择器、返回值都与玩家手打一致。</p>
+     */
+    private static void runFrameCommand(ServerLevel level, Plane plane,
+                                        top.hmjmfabc.projector.common.widget.ItemWidget frame,
+                                        String raw, ServerPlayer player, boolean onPlace) {
+        try {
+            String cmd = frame.renderCommand(raw,
+                    player.getGameProfile().getName(),
+                    plane.anchor.getX(), plane.anchor.getY(), plane.anchor.getZ());
+            if (cmd.isEmpty()) {
+                return;
+            }
+            var server = level.getServer();
+            if (server == null) {
+                return;
+            }
+            server.getCommands().performPrefixedCommand(
+                    server.createCommandSourceStack().withSuppressedOutput().withPermission(ADMIN_LEVEL), cmd);
+            Projector.LOGGER.info("[Projector][展示框] {}时执行绑定指令：/{}（玩家={} 控件={}）",
+                    onPlace ? "放入" : "取出", cmd, player.getGameProfile().getName(),
+                    frame.id.toString().substring(0, 8));
+        } catch (Throwable t) {
+            Projector.LOGGER.warn("[Projector][展示框] 绑定指令执行失败（已忽略）：{}（指令=[{}]）",
+                    String.valueOf(t), raw);
+        }
     }
 
     private static void sendSync(ServerPlayer player, ServerLevel level, Plane plane) {
@@ -512,12 +679,29 @@ public final class ServerNetHandler {
                     }
                     Plane fresh = Plane.build(level, plane.dimension, hit,
                             ProjectorConfig.INSTANCE.maxPlaneBlocks.get());
-                    plane.applyFrom(fresh);
+                    // 【161 修】这里原来写的是 applyFrom(fresh)，而 applyFrom 的第一道闸门是
+                    // 「id 必须相同」，Plane.build 出来的是**新 id** ⇒ 直接 return ⇒
+                    // 「重新圈选此平面」**什么都没做**，却照样提示"已重建"（静默空操作）。
+                    // 只换几何、保留内容，才是这个按钮的本意。
+                    plane.adoptGeometryFrom(fresh);
                     player.displayClientMessage(Component.translatable("projector.msg.rebuilt",
                             plane.blockCount()), false);
                     yield true;
                 }
                 case "deletePlane" -> {
+                    // 【161】「顺手删掉没有控件的平面」的服务端兜底。
+                    // args.ifEmpty = 这条删除是「客户端觉得它是空壳」才发的（不是玩家点删除按钮）。
+                    // 服务端**以自己那份为准**再确认一次：只要它其实有控件就拒绝 + 回推权威状态。
+                    // 为什么必须加这道闸门：160 的复活 bug 把控件清空后，客户端就"名正言顺"
+                    // 地把玩家的平面删掉了 —— 一个内容丢失 bug 被放大成数据丢失。
+                    // 宁可留一个空壳（玩家能自己删），也不能凭客户端的过期副本删掉内容。
+                    if (args.getBoolean("ifEmpty") && plane.widgets != null && !plane.widgets.isEmpty()) {
+                        Projector.LOGGER.warn("[Projector][服务端] 拒绝了「自动删除空平面」："
+                                        + "平面 {} 在服务端有 {} 个控件（客户端的副本过期了）",
+                                plane.id.toString().substring(0, 8), plane.widgets.size());
+                        sendSync(player, level, plane);
+                        yield false;
+                    }
                     if (!PlanePermissions.canDelete(plane, player)) {
                         player.displayClientMessage(
                                 Component.translatable("projector.msg.delete_protected"), true);
@@ -658,6 +842,10 @@ public final class ServerNetHandler {
         if (plane.widgetById(w.id) != null) {
             w.id = UUID.randomUUID();
         }
+        // 【27.2.4-200 修】非管理员提交的「绑定指令」必须抹掉 —— addWidget 以前没有这一步，
+        // 于是「新增一个计时器、把 cmd 塞进 NBT」就能让服务端以**控制台权限**执行任意指令
+        // （tickTimers 用的是 createCommandSourceStack()，只检查指令根节点存在）。
+        stripAdminOnlyCommands(w, player);
         // 【⑧】计时器的启动锚点由服务端来打（客户端算不出权威时间）。
         stampTimerStart(w, level.getGameTime());
         plane.widgets.add(w);
@@ -710,12 +898,109 @@ public final class ServerNetHandler {
                 "几何校验未通过 x=%.2f y=%.2f w=%.2f h=%.2f rot=%.2f z=%.2f alpha=%.2f",
                 incoming.x, incoming.y, incoming.w, incoming.h, incoming.rot, incoming.zOff,
                 incoming.alpha));
+        // ⚠ 【27.2.2】先把「管理员专属字段」的**服务端权威值**记下来：
+        //   下面 loadExtra 会把 incoming 的所有字段盖到 existing 上，盖完就分不出谁改了什么了。
+        final String oldTimerCommand = existing instanceof top.hmjmfabc.projector.common.widget.TimerWidget t0
+                ? t0.command : null;
+        final boolean isFrame = existing instanceof top.hmjmfabc.projector.common.widget.ItemWidget;
+        final String oldPlaceCommand = isFrame
+                ? ((top.hmjmfabc.projector.common.widget.ItemWidget) existing).placeCommand : null;
+        final String oldTakeCommand = isFrame
+                ? ((top.hmjmfabc.projector.common.widget.ItemWidget) existing).takeCommand : null;
         // 覆盖公共字段（位置/尺寸/旋转/层级/透明度/背景）与类型特有的内容字段
         existing.copyCommonFrom(incoming);
         existing.loadExtra(incoming.save());
+        // 【27.2.2】**越权防线**：指令绑定是管理员专属的，但 updateWidget 会把整个控件数据
+        // 一次性盖上去 —— 只靠「编辑器里不给非管理员显示输入框」是拦不住的：
+        // 改过的客户端（或原版数据包工具）可以直接把 cmdPlace 塞进 data 里。
+        // 所以这里做权威判定：非管理员提交的指令字段一律**回滚成服务端已有的值**并留痕。
+        restoreAdminOnlyCommands(existing, player, oldTimerCommand, isFrame,
+                oldPlaceCommand, oldTakeCommand);
         // 老存档里已存在的计时器也要在第一次编辑时就自动开始（见 stampTimerStart）
         stampTimerStart(existing, level.getGameTime());
         return true;
+    }
+
+    /**
+     * 非管理员不许改「会以管理员权限在服务端执行」的字段。
+     *
+     * <p>哪些字段算：计时器的 {@code command}、展示框的 {@code placeCommand}/{@code takeCommand}。
+     * 判据是「这条数据最终会被 {@code performPrefixedCommand} 以权限等级
+     * {@link #ADMIN_LEVEL} 执行」—— 那就是一条提权通道，必须与设置入口用同一道门槛。</p>
+     *
+     * <p>做法是**回滚**而不是拒绝整个更新：玩家可能只是改了个字号，不该因为
+     * 顺手带上来的指令字段而整条被拒（那样他会以为「编辑器坏了」）。
+     * 参数里的 {@code old*} 是调用方在覆盖之前记下的服务端权威值。</p>
+     */
+    /**
+     * 【27.2.4-200】**把非管理员提交的绑定指令抹掉**（新增控件这条路的版本）。
+     *
+     * <p>为什么必须有：{@code TimerWidget.command} / 展示框的 place/take 都是
+     * **以控制台权限执行**的（{@code tickTimers} / {@code runFrameCommand}），
+     * 而它们的值直接来自客户端 NBT。以前只有 {@code updateWidget} 有回滚闸门，
+     * 玩家改用 {@code addWidget} 就能绕过去 ⇒ 任意玩家让服务端执行 /op、/give、/stop。</p>
+     *
+     * <p>与 {@link #restoreAdminOnlyCommands} 的分工：那个是「已经存在的控件被改」时回滚，
+     * 这个是「新控件进来」时清空。两者共用同一份字段清单（以后加新控件记得两边都写）。</p>
+     */
+    private static void stripAdminOnlyCommands(Widget w, ServerPlayer player) {
+        if (w == null || player == null || player.hasPermissions(ADMIN_LEVEL)) {
+            return;
+        }
+        boolean stripped = false;
+        if (w instanceof top.hmjmfabc.projector.common.widget.TimerWidget timer
+                && timer.command != null && !timer.command.isEmpty()) {
+            timer.command = "";
+            stripped = true;
+        }
+        if (w instanceof top.hmjmfabc.projector.common.widget.ItemWidget frame) {
+            if (frame.placeCommand != null && !frame.placeCommand.isEmpty()) {
+                frame.placeCommand = "";
+                stripped = true;
+            }
+            if (frame.takeCommand != null && !frame.takeCommand.isEmpty()) {
+                frame.takeCommand = "";
+                stripped = true;
+            }
+        }
+        if (stripped) {
+            Projector.LOGGER.warn("[Projector] 非管理员新增的控件带绑定指令，已抹掉："
+                            + "玩家={} UUID={} 权限等级={}（需要 ≥{}）控件种类={}",
+                    player.getGameProfile().getName(), player.getUUID(),
+                    PlanePermissions.opLevel(player), ADMIN_LEVEL, w.kind());
+        }
+    }
+
+    private static void restoreAdminOnlyCommands(Widget existing, ServerPlayer player,
+                                                 String oldTimerCommand, boolean isFrame,
+                                                 String oldPlaceCommand, String oldTakeCommand) {
+        if (existing == null || player == null || player.hasPermissions(ADMIN_LEVEL)) {
+            return;
+        }
+        boolean blocked = false;
+        if (oldTimerCommand != null
+                && existing instanceof top.hmjmfabc.projector.common.widget.TimerWidget timer
+                && !java.util.Objects.equals(oldTimerCommand, timer.command)) {
+            timer.command = oldTimerCommand;
+            blocked = true;
+        }
+        if (isFrame && existing instanceof top.hmjmfabc.projector.common.widget.ItemWidget frame) {
+            if (!java.util.Objects.equals(oldPlaceCommand, frame.placeCommand)) {
+                frame.placeCommand = oldPlaceCommand == null ? "" : oldPlaceCommand;
+                blocked = true;
+            }
+            if (!java.util.Objects.equals(oldTakeCommand, frame.takeCommand)) {
+                frame.takeCommand = oldTakeCommand == null ? "" : oldTakeCommand;
+                blocked = true;
+            }
+        }
+        if (blocked) {
+            Projector.LOGGER.warn("[Projector] 拒绝越权修改绑定指令：玩家={} UUID={} 权限等级={}（需要 ≥{}）"
+                            + "控件类型={} 控件={}",
+                    player.getGameProfile().getName(), player.getUUID(),
+                    player.hasPermissions(4) ? 4 : player.hasPermissions(2) ? 2 : 0,
+                    ADMIN_LEVEL, existing.getClass().getSimpleName(), existing.id);
+        }
     }
 
     /**
@@ -877,6 +1162,13 @@ public final class ServerNetHandler {
                 }
                 if (mw.title != null && mw.title.length() > 256) {
                     mw.title = mw.title.substring(0, 256);
+                }
+                // 【27.2.4-200】播放列表条目上限（服务端兜底：整个平面会作为一个包广播出去）
+                if (mw.playlist.size() > 200) {
+                    java.util.List<net.minecraft.nbt.CompoundTag> keep =
+                            new java.util.ArrayList<>(mw.playlist.subList(0, 200));
+                    mw.playlist.clear();
+                    mw.playlist.addAll(keep);
                 }
                 if (mw.artist != null && mw.artist.length() > 256) {
                     mw.artist = mw.artist.substring(0, 256);
@@ -1055,13 +1347,20 @@ public final class ServerNetHandler {
             byte[] chunk = payload.data();
             if (chunk == null) chunk = new byte[0];
             int offset = payload.offset();
-            if (chunk.length > ProjectorConfig.INSTANCE.uploadChunkBytes.get() * 4) {
-                TransferLog.uploadFail(player, "单个分片过大（" + chunk.length + " 字节）",
+            // 【27.2.4-201】分片上限改成**固定值**：以前按「服务端配置的分片大小 × 4」算，
+            // 而分片大小是**客户端**的配置（默认 128 KB）—— 服务端配置还是 20 KB 时，
+            // 客户端每片 128 KB 会被这里判「分片过大」整场上传作废。
+            // 真正的流量上限由配额（总大小）兜着，这里只要挡住离谱的巨片即可。
+            if (chunk.length > MAX_UPLOAD_CHUNK_BYTES) {
+                TransferLog.uploadFail(player, "单个分片过大（" + chunk.length + " 字节，上限 "
+                        + MAX_UPLOAD_CHUNK_BYTES + "）",
                         session.head.hash(), session.head.name(), session.buffer.length, session.received);
                 UPLOADS.remove(uuid);
                 return;
             }
-            if (offset < 0 || offset + chunk.length > session.buffer.length) {
+            // 【27.2.4-200】比较必须用 long：offset=2147483647 时 int 加法会绕回负数，
+            // 让越界分片通过检查，直接打进 System.arraycopy。
+            if (offset < 0 || (long) offset + chunk.length > session.buffer.length) {
                 TransferLog.uploadFail(player, "分片越界（offset=" + offset + " len=" + chunk.length
                         + " 总长=" + session.buffer.length + "）",
                         session.head.hash(), session.head.name(), session.buffer.length, session.received);
@@ -1074,14 +1373,23 @@ public final class ServerNetHandler {
             // 【rc-77】只数「新覆盖」的字节：以前每次分片都调 covered.cardinality()，
             // 那是 O(文件大小/64) 的扫描 —— 24 MB 的文件传一遍要做 1227 次百万级字扫描，
             // 全在服务端主线程上（这也是服务端卡顿、保活延迟的帮凶）。
-            int newly = 0;
+            // 【27.2.4-201】再加一条快路：分片通常是整段新数据（顺序发送），
+            // 这时直接按区间置位、newly = 分片长度，省掉「逐字节 nextClearBit」的循环
+            //（128 KB 分片 = 十几万次循环，每片都跑在主线程上）。
             int end = offset + chunk.length;
-            for (int i = offset; i < end; ) {
-                int clear = session.covered.nextClearBit(i);
-                if (clear >= end) break;
-                session.covered.set(clear);
-                newly++;
-                i = clear + 1;
+            int newly;
+            if (chunk.length > 0 && session.covered.nextSetBit(offset) >= end) {
+                session.covered.set(offset, end);
+                newly = chunk.length;
+            } else {
+                newly = 0;
+                for (int i = offset; i < end; ) {
+                    int clear = session.covered.nextClearBit(i);
+                    if (clear >= end) break;
+                    session.covered.set(clear);
+                    newly++;
+                    i = clear + 1;
+                }
             }
             session.received += newly;
 
@@ -1137,32 +1445,47 @@ public final class ServerNetHandler {
                     entry.frames.add(new long[]{off, len});
                 }
             }
-            try {
-                boolean isNew = store.put(server, entry, session.buffer, session.maxBytes);
-                // 【②】每一次上传都留一行「完成」（分片数/用时/是否新文件/当日上传累计）
-                int chunkBytes = 1;
+            // 【27.2.4-200】整份媒体写盘（最大可到 adminMaxVideoBytes，默认 256 MB）**不能占着
+            // 服务端主线程**：以前这里直接在 enqueueWork 里 Files.write 整个 buffer，
+            // 期间主线程被占死、所有玩家的包都在排队（表现为全服卡一下）。
+            // 现在把写盘丢到专用 IO 线程，回主线程再做 ack / 广播。
+            final byte[] writeBytes = session.buffer;
+            final long startedAt = session.startedAt;
+            final int ackSession = payload.session();
+            final long maxBytesCap = session.maxBytes;
+            IO_EXECUTOR.execute(() -> {
+                boolean isNew;
                 try {
-                    chunkBytes = Math.max(1, ProjectorConfig.INSTANCE.uploadChunkBytes.get());
-                } catch (Throwable ignored) {
+                    isNew = store.put(server, entry, writeBytes, maxBytesCap);
+                } catch (Throwable ex) {
+                    Projector.LOGGER.error("[Projector] 写入媒体失败", ex);
+                    server.execute(() -> rejectUploadWriteFailed(player, entry, ackSession, ex));
+                    return;
                 }
-                TransferLog.uploadDone(player, entry.hash, entry.name, entry.size,
-                        (int) ((entry.size + chunkBytes - 1) / chunkBytes),
-                        System.currentTimeMillis() - session.startedAt, isNew, session.maxBytes);
-                // 【rc-77】最终确认：客户端要等服务端「落盘 + 哈希校验通过」才算上传成功
-                try {
-                    PacketDistributor.sendToPlayer(player, new Payloads.MediaAck(
-                            payload.session(), (int) Math.min(Integer.MAX_VALUE, entry.size),
-                            true, false, ""));
-                } catch (Throwable ignored) {
-                }
-                // 媒体集合变了：给所有人重发清单，这样其他客户端能立刻按档位预缓存（⑫）
-                for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
-                    sendServerInfo(sp);
-                }
-            } catch (IOException ex) {
-                Projector.LOGGER.error("[Projector] 写入媒体失败", ex);
-                player.displayClientMessage(Component.translatable("projector.msg.media_failed"), true);
-            }
+                final boolean newFile = isNew;
+                server.execute(() -> {
+                    // 【②】每一次上传都留一行「完成」（分片数/用时/是否新文件/当日上传累计）
+                    int chunkBytes = 1;
+                    try {
+                        chunkBytes = Math.max(1, ProjectorConfig.INSTANCE.uploadChunkBytes.get());
+                    } catch (Throwable ignored) {
+                    }
+                    TransferLog.uploadDone(player, entry.hash, entry.name, entry.size,
+                            (int) ((entry.size + chunkBytes - 1) / chunkBytes),
+                            System.currentTimeMillis() - startedAt, newFile, maxBytesCap);
+                    // 【rc-77】最终确认：客户端要等服务端「落盘 + 哈希校验通过」才算上传成功
+                    try {
+                        PacketDistributor.sendToPlayer(player, new Payloads.MediaAck(
+                                ackSession, (int) Math.min(Integer.MAX_VALUE, entry.size),
+                                true, false, ""));
+                    } catch (Throwable ignored) {
+                    }
+                    // 媒体集合变了：给所有人重发清单，这样其他客户端能立刻按档位预缓存（⑫）
+                    for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+                        sendServerInfo(sp);
+                    }
+                });
+            });
         });
     }
 
@@ -1287,6 +1610,9 @@ public final class ServerNetHandler {
 
     /** 单次下发请求的字节上限（与客户端的续传步长一致）。 */
     private static final int CHUNK_BYTES = 200 * 1024;
+
+    /** 【27.2.4-201】服务端愿意接受的**单个上传分片**上限（客户端配置最大 512 KB）。 */
+    private static final int MAX_UPLOAD_CHUNK_BYTES = 1024 * 1024;
 
     /** 见 {@link #restartStorm}。 */
     private static final Map<String, long[]> RESTARTS = new java.util.concurrent.ConcurrentHashMap<>();
@@ -1488,15 +1814,46 @@ public final class ServerNetHandler {
     public static void onFontUpload(Payloads.FontUpload payload, IPayloadContext ctx) {
         ctx.enqueueWork(() -> {
             if (!(ctx.player() instanceof ServerPlayer player)) return;
-            if (!PlanePermissions.canAddMedia(player)) {
+            // 【27.2.4-200 修】这里以前判的是 canAddMedia（媒体上传开关，默认全开），
+            // 与界面「按权限 4 置灰」和下面这句提示都对不上 ⇒ 任何玩家都能往存档目录写字体。
+            if (!PlanePermissions.canManageFonts(player)) {
                 player.displayClientMessage(Component.translatable("projector.msg.only_op4"), true);
-                TransferLog.uploadFail(player, "权限不足（字体上传同媒体上传，需要权限等级 4）",
+                TransferLog.uploadFail(player, "权限不足（自定义字体上传需要权限等级 4）",
                         payload.fontId(), payload.fileName(),
                         payload.data() == null ? 0 : payload.data().length, 0);
                 return;
             }
             MinecraftServer server = player.getServer();
             if (server == null) return;
+            // 【27.2.4-200】字体文件数量上限：不给任何人在 <存档>/projector/fonts/ 里无限写文件。
+            // 覆盖同名文件仍然允许（那是"重新上传同一个字体"），只有"新增"才计数。
+            final int MAX_FONT_FILES = 64;
+            try {
+                java.nio.file.Path dir = ServerFonts.fontDir(server);
+                boolean overwrite = payload.fileName() != null
+                        && java.nio.file.Files.isRegularFile(dir.resolve(payload.fileName()));
+                if (!overwrite) {
+                    long files = 0;
+                    if (java.nio.file.Files.isDirectory(dir)) {
+                        try (var st = java.nio.file.Files.list(dir)) {
+                            files = st.count();
+                        }
+                    }
+                    if (files >= MAX_FONT_FILES) {
+                        player.displayClientMessage(
+                                Component.translatable("projector.msg.font_failed"), true);
+                        TransferLog.uploadFail(player,
+                                "字体数量已达上限 " + MAX_FONT_FILES + " 个（先删掉不用的）",
+                                payload.fontId(), payload.fileName(), 0, 0);
+                        Projector.LOGGER.warn("[Projector][服务端][字体] 拒绝上传：字体目录已有 {} 个文件"
+                                + "（上限 {}），玩家={}", files, MAX_FONT_FILES,
+                                player.getGameProfile().getName());
+                        return;
+                    }
+                }
+            } catch (Exception ignored) {
+                // 目录读不动就不计数（正常路径上这会发生在第一次上传、目录还没建时）
+            }
             TransferLog.uploadStart(player, payload.fontId(), payload.fileName(),
                     payload.data() == null ? 0 : payload.data().length, false, 0, 0);
             // 【①】落盘 + 回读重新核验哈希（ServerFonts.store 内部完成）
@@ -1587,7 +1944,19 @@ public final class ServerNetHandler {
                     case "toggle" -> {
                         boolean next = vargs.contains("value")
                                 ? vargs.getBoolean("value") : !video.paused;
+                        // 【27.2.4-201】先收下客户端上报的**真实时长**：外部解码器的视频
+                        // 服务端自己算不出来（frameCount=1/fps=10 ⇒ 100 毫秒），
+                        // 而暂停位置、进度条、跳转全都要用它。
+                        if (vargs.contains("durationMs") && vargs.getLong("durationMs") > 0) {
+                            video.mediaDurationMs = vargs.getLong("durationMs");
+                        }
                         video.setPausedAt(next, wall);
+                        // 再按客户端上报的**真实位置**精确落点（暂停冻结位置就靠它）。
+                        // 以前没有这一步：服务端拿自己错的锚点算，暂停位置随机落在 0~99ms，
+                        // 玩家看到「一暂停进度条就重置」。
+                        if (vargs.contains("ms")) {
+                            video.seekToMs(Math.max(0L, vargs.getLong("ms")), wall);
+                        }
                         Projector.LOGGER.info(
                                 "[Projector][视频] {} 按了播放键：{}（平面={} 控件={}）",
                                 player.getGameProfile().getName(), next ? "暂停" : "播放",
@@ -1709,6 +2078,59 @@ public final class ServerNetHandler {
             return;
         }
 
+        // 【27.2.2】展示框：世界里右键放入 / 左键取出 ⇒ 服务端改真值、跑绑定的指令。
+        // ⚠ 用户要求：**绑定指令只有管理员能设置** —— 设置入口在编辑器里，
+        //    而「能不能改」的权威判定在服务端的 setItemCommand（下面），客户端灰按钮只是提示。
+        if (w instanceof top.hmjmfabc.projector.common.widget.ItemWidget frame) {
+            switch (payload.action()) {
+                case "itemPlace" -> {
+                    if (frame.hasItem() && !frame.placed) {
+                        frame.place(now, player.getGameProfile().getName());
+                        runFrameCommand(level, plane, frame, frame.placeCommand, player, true);
+                    }
+                }
+                case "itemTake" -> {
+                    if (frame.placed) {
+                        frame.take(now, player.getGameProfile().getName());
+                        runFrameCommand(level, plane, frame, frame.takeCommand, player, false);
+                    }
+                }
+                case "setItemCommand" -> {
+                    if (!player.hasPermissions(ADMIN_LEVEL)) {
+                        Projector.LOGGER.warn("[Projector][展示框] 拒绝越权设置绑定指令：玩家={} UUID={} "
+                                        + "权限等级={}（需要 ≥{}）平面={} 控件={}",
+                                player.getGameProfile().getName(), player.getUUID(),
+                                player.hasPermissions(4) ? 4 : player.hasPermissions(2) ? 2 : 0,
+                                ADMIN_LEVEL, plane.id, frame.id);
+                        return;
+                    }
+                    CompoundTag args = payload.args();
+                    if (args != null) {
+                        if (args.contains("place")) {
+                            String c = args.getString("place");
+                            if (c == null) c = "";
+                            frame.placeCommand = c.length() > 256 ? c.substring(0, 256) : c;
+                        }
+                        if (args.contains("take")) {
+                            String c = args.getString("take");
+                            if (c == null) c = "";
+                            frame.takeCommand = c.length() > 256 ? c.substring(0, 256) : c;
+                        }
+                        Projector.LOGGER.info("[Projector][展示框] 管理员 {} 绑定指令：放入=[{}] 取出=[{}]",
+                                player.getGameProfile().getName(), frame.placeCommand, frame.takeCommand);
+                    }
+                }
+                default -> {
+                    Projector.LOGGER.warn("[Projector] 展示框收到未知动作：{}（平面 {} 控件 {}）",
+                            payload.action(), plane.id, payload.widgetId());
+                    return;
+                }
+            }
+            data.markDirty();
+            broadcastPlane(level, plane);
+            return;
+        }
+
         if (!(w instanceof ProgressWidget progress)) return;
             switch (payload.action()) {
                 case "reset" -> progress.reset(now);
@@ -1727,7 +2149,11 @@ public final class ServerNetHandler {
                             progress.startGameTime = now;
                         }
                         if (args.contains("title")) {
-                            progress.title = args.getString("title");
+                            // 【27.2.4-200 修】其它路径（validateWidget / sanitizeGeometry）都截到 256，
+                            // 唯独这个动作没有 ⇒ 改过的客户端能塞一整包的文本，服务端还会
+                            // markDirty + 向整个维度广播。
+                            String t0 = args.getString("title");
+                            progress.title = t0 == null ? "" : (t0.length() > 256 ? t0.substring(0, 256) : t0);
                         }
                         if (args.getBoolean("restart")) {
                             progress.accumulatedTicks = 0;
@@ -1748,6 +2174,130 @@ public final class ServerNetHandler {
     // ------------------------------------------------------------------
     // ⑧ 计时器：倒计时归零时触发绑定指令
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // 【27.2.2】播放列表自动续播
+    // ------------------------------------------------------------------
+
+    /**
+     * 【27.2.2】流程播放：**最后一个片段播完就停**（循环模式则从头再来）。
+     *
+     * <p>为什么放在服务端：{@code SequenceTrack} 的播放锚点是「游戏刻」，
+     * 停止/重播是一个**全服一致的状态变化**。如果让每个客户端自己判断，
+     * 抬头的时机各差几十毫秒、还会因为掉刻各自跑偏；放在服务端每刻判一次，
+     * 变一次就 {@code markDirty + broadcastPlane}，所有人同时看到同一个结果。</p>
+     *
+     * <p>开销：每刻只遍历各维度的平面列表、跳过没有在播流程的（绝大多数），
+     * 而且只有**真的变了**才广播（单次流程一辈子只广播一次）。</p>
+     */
+    public static void tickSequences(MinecraftServer server) {
+        for (ServerLevel level : server.getAllLevels()) {
+            ProjectorData data = ProjectorData.get(level);
+            long gameTime = level.getGameTime();
+            for (Plane plane : data.planesIn(level.dimension().location())) {
+                var seq = plane.sequence;
+                if (seq == null || !seq.playing) continue;
+                boolean looping = seq.loop;
+                double end = seq.maxEndSec();
+                if (!seq.advance(gameTime)) continue;
+                data.markDirty();
+                broadcastPlane(level, plane);
+                if (looping && seq.playing) {
+                    // 循环重播是「设计如此」，不刷日志（否则 3 秒的循环会把日志刷满）
+                    continue;
+                }
+                Projector.LOGGER.info("[Projector][流程] 平面 {} 的流程播完了（{} 个片段，末尾 {} 秒），已停止",
+                        plane.id.toString().substring(0, 8), seq.size(),
+                        String.format(java.util.Locale.ROOT, "%.1f", end));
+            }
+        }
+    }
+
+    /** 【27.2.4-200】媒体写盘专用线程（单线程就够：一次只处理一个会话的收尾）。 */
+    private static final java.util.concurrent.ExecutorService IO_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "Projector-Media-IO");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** 写盘失败的收尾（已回到主线程）：告诉客户端失败，并清掉在途会话。 */
+    private static void rejectUploadWriteFailed(ServerPlayer player,
+                                                top.hmjmfabc.projector.server.MediaStore.Entry entry,
+                                                int ackSession, Throwable ex) {
+        try {
+            TransferLog.uploadFail(player, "服务端写盘失败：" + ex, entry.hash, entry.name,
+                    entry.size, 0);
+            PacketDistributor.sendToPlayer(player, new Payloads.MediaAck(
+                    ackSession, (int) Math.min(Integer.MAX_VALUE, entry.size), false, false,
+                    "服务端写盘失败"));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 随机播放用的随机源（服务端 tick 单线程，不必并发容器）。 */
+    private static final java.util.Random PLAYLIST_RND = new java.util.Random();
+
+    /**
+     * 播放列表：一首放完自动接下一首。
+     *
+     * <p><b>为什么放在服务端</b>：播放状态（{@code playing} + {@code startedGameTime}）
+     * 本来就是**服务端权威**的，所有客户端各算各的进度。若让客户端来推进，
+     * 一个平面上有 N 个玩家就会发出 N 次 updateWidget（随机会算出不同的下一首），
+     * 还要额外做去重。放在这里：只推进一次、只广播一次，谁都不需要抢。</p>
+     *
+     * <p>判据用服务端的游戏刻（{@code finishedAt} 的语义本来就是游戏刻）。
+     * 顺序模式播完最后一首就停下（{@code playing=false}）；
+     * 单曲循环 / 列表循环 / 随机的推进规则见 {@code MusicWidget.nextPlaylistIndex}。</p>
+     */
+    public static void tickPlaylists(MinecraftServer server) {
+        for (ServerLevel level : server.getAllLevels()) {
+            ProjectorData data = ProjectorData.get(level);
+            long gameTime = level.getGameTime();
+            for (Plane plane : data.planesIn(level.dimension().location())) {
+                boolean planeChanged = false;
+                for (Widget w : plane.widgets) {
+                    if (!(w instanceof top.hmjmfabc.projector.common.widget.MusicWidget music)) continue;
+                    if (!music.playing || !music.hasTrack()) continue;
+                    if (!music.finishedAt(gameTime)) continue;
+                    // 没有播放列表：行为与以前完全一致（放完就静音，不自动接）
+                    if (music.playlist.isEmpty()) continue;
+                    int next = music.nextPlaylistIndex(music.playlistIndex, false, PLAYLIST_RND);
+                    if (next < 0) {
+                        music.playing = false;
+                        planeChanged = true;
+                        Projector.LOGGER.info("[Projector][音乐] 播放列表已放完（顺序模式），停止：{}（平面 {}）",
+                                music.label(), plane.id.toString().substring(0, 8));
+                        continue;
+                    }
+                    var entry = music.playlistAt(next);
+                    if (entry == null || entry.key() == null || entry.key().isBlank()) {
+                        // 列表里混进了一条空数据：移掉它，别让整个列表卡在这一条上
+                        music.removeFromPlaylist(next);
+                        planeChanged = true;
+                        Projector.LOGGER.warn("[Projector][音乐] 播放列表第 {} 首数据为空，已移除（平面 {}）",
+                                next + 1, plane.id.toString().substring(0, 8));
+                        continue;
+                    }
+                    music.setTrackInfo(entry.kind(), entry.key(), entry.title(), entry.artist(),
+                            entry.durationMs());
+                    // setTrackInfo 会把 playing 置回 false、位置归零；这里紧接着补上「开始播」：
+                    // 下一个刻起所有客户端都会按 startedGameTime 算出同一个进度。
+                    music.playlistIndex = next;
+                    music.playing = true;
+                    music.startedGameTime = gameTime;
+                    planeChanged = true;
+                    Projector.LOGGER.info("[Projector][音乐] 播放列表续播第 {}/{} 首：{}（平面 {}）",
+                            next + 1, music.playlistSize(), entry.display(),
+                            plane.id.toString().substring(0, 8));
+                }
+                if (planeChanged) {
+                    data.markDirty();
+                    broadcastPlane(level, plane);
+                }
+            }
+        }
+    }
 
     /**
      * 每秒扫一次所有平面的计时器控件：倒计时归零且绑定了指令、且还没触发过的，

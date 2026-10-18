@@ -225,12 +225,84 @@ public final class Plane {
     }
 
     /**
+     * 【27.2.2-161】**只把「几何」搬过来**，控件 / 名字 / 创建者 / 保护设置一律原样保留。
+     *
+     * <p>唯一用途：<b>复活</b>。「方块被挖掉又补回来」时服务端会按当前世界重新
+     * {@code build} 出一份几何，但那个新对象是个**空壳**（没有控件、没有名字、没有保护设置）——
+     * 必须把几何搬进旧对象里（旧对象的 id / 控件引用 / 界面上持有的引用都不能换）。</p>
+     *
+     * <p>⚠ <b>绝不能改用 {@link #applyFrom(Plane)} 代替</b>：那个方法的语义是
+     * 「以 {@code other} 为准的**覆盖式同步**」（客户端收广播时用），
+     * 它连 {@code name / creator / protectBlocks / protectContent / deleteProtect}
+     * 和整份 {@code widgets}（走 {@link #mergeWidgets}，空表就是**清空**）一起覆盖。
+     * 拿一个空壳去喂它，结果是：**控件全没、名字没了、创建者被改成当前玩家、保护开关全关**，
+     * 只剩几何是对的 —— 实测就是这个 bug（见 {@code tmp/probe/ReviveWipe.java}，
+     * 以及 §5.5 第 98 条）。</p>
+     *
+     * <p>要想清楚「谁是权威」：这里权威是<b>旧对象</b>（它带着玩家做的所有内容），
+     * 新对象只提供「按当前世界重算出来的形状」。</p>
+     */
+    public void adoptGeometryFrom(Plane world) {
+        if (world == null) return;
+        this.dimension = world.dimension;
+        this.anchor = world.anchor;
+        this.face = world.face;
+        this.originU = world.originU;
+        this.originV = world.originV;
+        this.width = world.width;
+        this.height = world.height;
+        this.fullFaces = world.fullFaces;
+        this.canvasOffsetX = world.canvasOffsetX;
+        this.canvasOffsetY = world.canvasOffsetY;
+        this.anchorSurface = (Double.isNaN(world.anchorSurface) || world.anchorSurface < 0
+                || world.anchorSurface > 1)
+                ? defaultAnchorSurfaceFor(world.face)
+                : world.anchorSurface;
+        this.blocks.clear();
+        this.blocks.putAll(world.blocks);
+        invalidateCache();
+    }
+
+    /**
+     * 【161】**复活专用**：把「按旧坐标系重建出来的方块面」搬进来，
+     * <b>画布坐标系一个字段都不动</b>（anchor / originU,V / canvasOffsetX,Y / width,height 只增不减）。
+     *
+     * <p>与 {@link #adoptGeometryFrom(Plane)} 的区别就是「要不要换坐标系」：</p>
+     * <ul>
+     *   <li>{@code adoptGeometryFrom} = <b>换坐标系</b>。用于「重新圈选此平面」和旧存档迁移 ——
+     *       它们的目的是**修数据**（按当前世界重算一套正确的坐标系，内容随之归位）。</li>
+     *   <li>{@code absorbFromRebuild} = <b>不换坐标系</b>。用于复活 ——
+     *       玩家只是把挖掉的方块补回来，控件没动过，凭什么要他重新摆一遍？
+     *       ⚠ 配套要求：{@code rebuilt} 必须是用 {@code Plane.build(..., this)} **沿用本平面坐标系**
+     *       建出来的，否则搬进来的方块矩形和旧坐标系对不上。</li>
+     * </ul>
+     */
+    public void absorbFromRebuild(Plane rebuilt) {
+        if (rebuilt == null) return;
+        this.dimension = rebuilt.dimension;
+        this.face = rebuilt.face;
+        // 并集而不是替换：复活只负责「把补回来的方块加进来」。
+        // 替换会把「这次矩形没扩到、但其实还有效」的方块面丢掉，那些地方从此点不到。
+        // 真正没了的方块由 onBlockBreak 负责删，不在这里根据一次重建去推断。
+        this.blocks.putAll(rebuilt.blocks);
+        // 只要重建里出现不完整面，就按不完整算（保守）
+        this.fullFaces = this.fullFaces && rebuilt.fullFaces;
+        // 尺寸只许变大：变小会把已经存在的控件挤出画布（它们是按旧尺寸摆的）
+        this.width = Math.max(this.width, rebuilt.width);
+        this.height = Math.max(this.height, rebuilt.height);
+        invalidateCache();
+    }
+
+    /**
      * 用另一份数据<b>原地</b>更新本对象。
      *
      * <p>客户端每次收到服务端广播都会解析出一份新的 {@code Plane}。
      * 如果直接把缓存列表里的元素替换成新对象，任何已经持有旧引用的界面
      * （平面对话框、编辑器）就会永远停留在打开那一刻的快照上——
      * 新加的控件看不到、保护开关用过期值发送。原地更新可以彻底避免这个问题。</p>
+     *
+     * <p>⚠ 这是<b>以 {@code other} 为准的覆盖式同步</b>：连名字、创建者、保护开关、控件
+     * 一起覆盖。只想换几何（复活）请用 {@link #adoptGeometryFrom(Plane)}。</p>
      */
     public void applyFrom(Plane other) {
         if (other == null || !this.id.equals(other.id)) return;
@@ -365,7 +437,11 @@ public final class Plane {
         // 数据版本：2 = anchorSurface 的含义改为「从方块最小角沿外法线到面平面的距离」
         // （此前 min 侧的 DOWN/WEST/NORTH 被错误地存成了 1，会让内容离开方块一格）
         // 3 = right 轴修正为右手系（DOWN/WEST/EAST 曾有镜像缺陷）
-        t.putInt("v", 3);
+        // 【27.2.4-200 修】带「待重建」标记的平面必须把版本写回 2：
+        // load() 就是用 `v < 3` 来还原 needsRebuild 的。以前这里无条件写 3，
+        // 于是 migrateLegacyPlanes 失败（锚点方块没了等）留下的标记会被下一次存档洗掉
+        // ⇒ 那块旧平面永远修不了，警告也不会再出现。
+        t.putInt("v", needsRebuild ? 2 : 3);
         t.putDouble("cox", canvasOffsetX);
         t.putDouble("coy", canvasOffsetY);
         t.putInt("w", width);
@@ -479,11 +555,24 @@ public final class Plane {
      * @param maxBlocks 最大方块数，超出即停止扩张
      */
     public static Plane build(BlockGetter level, ResourceLocation dimension, TargetPicker.FaceHit hit, int maxBlocks) {
+        return build(level, dimension, hit, maxBlocks, null);
+    }
+
+    /**
+     * 【161】带「画布坐标系沿用」的构建：{@code frame != null} 时沿用它的坐标系。
+     *
+     * <p><b>只给复活用。</b>复活时命中的方块不是原来的锚点，矩形范围也可能不同
+     * （`sameBlockOnly` 在材质不同处停下、有洞就在洞那一列停下）——
+     * 一旦让 `assemble` 重新算原点/偏移，整张平面连着控件就会在世界上平移几格。
+     * 沿用旧坐标系后，world(画布 0,0) 与旧平面完全相同 ⇒ 内容纹丝不动。</p>
+     */
+    public static Plane build(BlockGetter level, ResourceLocation dimension, TargetPicker.FaceHit hit,
+                              int maxBlocks, Plane frame) {
         if (level == null) {
             // 没有世界访问能力时（服务端复核路径的退化情况）只保留单个方块面
             LinkedHashMap<Long, TargetPicker.FaceHit> single = new LinkedHashMap<>();
             single.put(hit.pos().asLong(), hit);
-            return assemble(dimension, single, hit.face(), hit);
+            return assemble(dimension, single, hit.face(), hit, frame);
         }
         Direction face = hit.face();
         Direction r = BlockFace.right(face);
@@ -553,7 +642,7 @@ public final class Plane {
                             + "圈选就此停止；若这不是你想要的范围，请调高上限或换一面更规整的墙。",
                     maxBlocks);
         }
-        return assemble(dimension, collected, face, hit);
+        return assemble(dimension, collected, face, hit, frame);
     }
 
     /**
@@ -724,13 +813,22 @@ public final class Plane {
         return new double[]{u0, u1, v0, v1};
     }
 
-    private static Plane assemble(ResourceLocation dimension, LinkedHashMap<Long, TargetPicker.FaceHit> collected,
-                                  Direction face, TargetPicker.FaceHit anchorHit) {
+    static Plane assemble(ResourceLocation dimension, LinkedHashMap<Long, TargetPicker.FaceHit> collected,
+                                 Direction face, TargetPicker.FaceHit anchorHit, Plane frame) {
         Plane p = new Plane();
         p.id = UUID.randomUUID();
         p.dimension = dimension;
         p.face = face;
-        p.anchor = anchorHit.pos().immutable();
+        // 【161】**frame != null = 沿用旧平面的画布坐标系**（复活专用）。
+        //
+        // 为什么必须沿用：画布坐标是「相对这个坐标系」存的，而矩形是从
+        // **准心命中的那一格**往外一圈圈扩出来的（growEdge），
+        // 起点不同 ⇒ 长出来的矩形范围可能不同（`sameBlockOnly` 会在材质不同处停下、
+        // 有洞则在洞那一列停下）⇒ 矩形的「最小角方块」换了 ⇒
+        // `canvasOffsetX/Y` 重算 ⇒ 整张平面连着控件在世界上平移几格。
+        // 复用时把坐标系四个字段（anchor / originU,V / canvasOffsetX,Y）原样拿过来，
+        // world(画布 0,0) 就一个毫米都不动 ⇒ 内容不可能移动（物理上做不到）。
+        p.anchor = (frame != null ? frame.anchor : anchorHit.pos()).immutable();
         p.creator = null;
 
         Direction r = BlockFace.right(face);
@@ -738,13 +836,15 @@ public final class Plane {
 
         // 必须在计算每块 depth 之前就定好锚点面的位置：
         // depthOf() 需要它作为 0 参照，否则整张平面的内容会沿着法线偏移整整一格。
-        p.anchorSurface = normalDistanceToFace(face, anchorHit.box(), anchorHit.pos());
+        p.anchorSurface = frame != null ? frame.anchorSurface
+                : normalDistanceToFace(face, anchorHit.box(), anchorHit.pos());
 
         // 网格坐标：以「锚点方块」为原点的相对网格索引（很重要！）
         // 若直接用世界坐标当索引，PlaneCanvas.originWorld() 会把画布原点平移到
         // 离墙一个世界坐标距离的地方，所有内容都会画到错误的位置。
-        double anchorGu = gridAxis(anchorHit.pos(), r);
-        double anchorGv = gridAxis(anchorHit.pos(), u);
+        // 沿用坐标系时必须用 **旧锚点** 算网格索引，两者是同一套换算。
+        double anchorGu = gridAxis(p.anchor, r);
+        double anchorGv = gridAxis(p.anchor, u);
 
         Map<Integer, Double> colSpan = new LinkedHashMap<>();
         Map<Integer, Double> rowSpan = new LinkedHashMap<>();
@@ -789,8 +889,10 @@ public final class Plane {
         // 完整方块面的范围是 [0,1]，所以完整方块的 originUV 恒为 (0,0)。
         // 注意不能用 minGridU + faceMinU()：前者是方块数（可为负），后者是比例，
         // 单位不同，相加会让整张画布平移错位（表现为内容整体偏移一个方块）。
-        p.originU = anchorHit.faceMinU() * PlaneCanvas.UNITS_PER_BLOCK;
-        p.originV = anchorHit.faceMinV() * PlaneCanvas.UNITS_PER_BLOCK;
+        p.originU = frame != null ? frame.originU
+                : anchorHit.faceMinU() * PlaneCanvas.UNITS_PER_BLOCK;
+        p.originV = frame != null ? frame.originV
+                : anchorHit.faceMinV() * PlaneCanvas.UNITS_PER_BLOCK;
 
         double totalW = 0, totalH = 0;
         for (double v : colSpan.values()) totalW += v;
@@ -811,17 +913,34 @@ public final class Plane {
         if (raws.isEmpty()) {
             rMinX = 0; rMinY = 0; rMaxX = totalW; rMaxY = totalH;
         }
-        p.canvasOffsetX = -rMinX;
-        p.canvasOffsetY = -rMinY;
-        // 画布原点：把命中点所在的方块面整体平移到非负坐标，避免出现负的画布坐标
-        p.width = Math.max(1, (int) Math.round(rMaxX - rMinX));
-        p.height = Math.max(1, (int) Math.round(rMaxY - rMinY));
+        if (frame != null) {
+            // 【161】沿用旧坐标系：偏移**绝不能重算**（重算＝把矩形最小角平移到 0，
+            // 而这正是「整张平面平移几格」的根源）。尺寸只许变大，方便在新补回来的
+            // 方块上继续作画；变小会把已经存在的控件挤出画布。
+            p.canvasOffsetX = frame.canvasOffsetX;
+            p.canvasOffsetY = frame.canvasOffsetY;
+            // 【27.2.4-200 修】rMaxX/rMaxY 是「矩形自身坐标系」（`gu*16 − originU`），
+            // 而方块矩形最终落在「控件坐标系」（再 `+ canvasOffsetX/Y`）里。
+            // 少了这一步，只要平面朝 -right/-up 方向延伸过（canvasOffset > 0），
+            // 复活后的画布就会比实际内容窄一截。
+            p.width = Math.max(frame.width,
+                    Math.max(1, (int) Math.ceil(rMaxX + p.canvasOffsetX)));
+            p.height = Math.max(frame.height,
+                    Math.max(1, (int) Math.ceil(rMaxY + p.canvasOffsetY)));
+        } else {
+            p.canvasOffsetX = -rMinX;
+            p.canvasOffsetY = -rMinY;
+            // 画布原点：把命中点所在的方块面整体平移到非负坐标，避免出现负的画布坐标
+            p.width = Math.max(1, (int) Math.round(rMaxX - rMinX));
+            p.height = Math.max(1, (int) Math.round(rMaxY - rMinY));
+        }
 
         // 不变式自检：完整方块平面上，长宽必须正好等于「列/行数 x 16 单位」。
         // 任何一次误改单位换算都会在这里立刻暴露（而不是等到画面上才发现）。
+        // ⚠ 沿用旧坐标系时这个恒等式**本来就不成立**（原点不在矩形最小角），跳过。
         int expectW = (int) Math.round(totalW);
         int expectH = (int) Math.round(totalH);
-        if (p.width != expectW || p.height != expectH) {
+        if (frame == null && (p.width != expectW || p.height != expectH)) {
             top.hmjmfabc.projector.Projector.LOGGER.error(
                     "[Projector] 长宽自检失败！width={} 期望={} (列数 {}), height={} 期望={} (行数 {})"
                             + " —— 说明单位换算被改坏了",

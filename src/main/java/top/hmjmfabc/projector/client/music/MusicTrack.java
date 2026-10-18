@@ -94,6 +94,12 @@ public record MusicTrack(Kind kind, String key, String title, String artist, lon
     /** 拉流用的地址：本地是 {@code file:}，其余是 http(s)。 */
     public String playUrl() {
         if (kind == Kind.NETEASE) {
+            // 【27.2.2】先看有没有「外部解析器」（VIP 登录附属）给的直链：
+            // 有就用它（码率更高），没有才回落到内置外链。
+            String resolved = NetEaseApi.resolved(key);
+            if (resolved != null && !resolved.isEmpty()) {
+                return resolved;
+            }
             return "https://" + NETEASE_HOST + "/song/media/outer/url?id="
                    + URLEncoder.encode(key, StandardCharsets.UTF_8) + ".mp3";
         }

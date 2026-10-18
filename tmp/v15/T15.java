@@ -115,16 +115,20 @@ public class T15 {
             chk("连续重建 10 次视窗都不退", stable, String.format("最终视窗=%.2f", bar.windowStartSec()));
         }
 
-        // ---------- 3. 恢复时也要夹取（0 ~ 969），不能凭空造出越界视窗 ----------
+        // ---------- 3. 恢复时也要夹取（0 ~ 动态上限），不能凭空造出越界视窗 ----------
         {
             Plane p = new Plane();
             p.sequence = new SequenceTrack();
+            // 【27.2.2】上限是动态的（末尾 + 余量）；空流程时只有最小跨度 30 秒，
+            // 所以这里塞一条长片段，让「越界值」有地方可夹。
+            p.sequence.add(new SequenceClip(java.util.UUID.randomUUID(), 0, 1000));
             TimelineBar bar = new TimelineBar(BAR_X, BAR_Y, BAR_W, BAR_H, p, new Rec());
             bar.setWindowStartSec(-50);
             chk("恢复负值会夹到 0", bar.windowStartSec() == 0, "视窗=" + bar.windowStartSec());
             bar.setWindowStartSec(5000);
-            chk("恢复超界值会夹到 969", Math.abs(bar.windowStartSec() - 969) < 1e-6,
-                    "视窗=" + bar.windowStartSec());
+            double cap = p.sequence.dynamicMaxSec() - TimelineBar.VISIBLE_SEC;
+            chk("恢复超界值会夹到动态上限", Math.abs(bar.windowStartSec() - cap) < 1e-6,
+                    String.format("视窗=%.1f（上限=%.1f）", bar.windowStartSec(), cap));
         }
 
         System.out.println(fails == 0 ? "\n== ALL PASS ==" : "\n== " + fails + " FAILED ==");

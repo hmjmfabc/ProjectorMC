@@ -122,13 +122,22 @@ public class SequenceEditorScreen extends ProjectorScreen {
         bottomLimit = this.height - pad - 26;
 
         // ---------------- 左栏：播放控制 ----------------
-        int third = (leftW - 16) / 3;
+        // 【27.2.2】第四个按钮 = 循环开关（用户要求「流程可以设置循环播放」）。
+        // 上一行是「播放/暂停 · 重播 · 停止」，这一行再挤一个，所以从三等分改成四等分。
+        int quarter = Math.max(30, (leftW - 20) / 4);
         boolean playing = plane.sequence != null && plane.sequence.playing;
-        button(playing ? "\u6682\u505c" : "\u64ad\u653e", px + 4, y, third, 18, b -> {
+        boolean looping = plane.sequence != null && plane.sequence.loop;
+        button(playing ? "暂停" : "播放", px + 4, y, quarter, 18, b -> {
             sendSeq(playing ? "seqPause" : "seqResume");
         }).active = canEdit;
-        button("\u91cd\u64ad", px + 8 + third, y, third, 18, b -> sendSeq("seqPlay")).active = canEdit;
-        button("\u505c\u6b62", px + 12 + third * 2, y, third, 18, b -> sendSeq("seqStop")).active = canEdit;
+        button("重播", px + 6 + quarter, y, quarter, 18, b -> sendSeq("seqPlay")).active = canEdit;
+        button("停止", px + 8 + quarter * 2, y, quarter, 18, b -> sendSeq("seqStop")).active = canEdit;
+        button(looping ? "循环:开" : "循环:关", px + 10 + quarter * 3, y, quarter, 18, b -> {
+            if (plane.sequence == null) return;
+            plane.sequence.loop = !plane.sequence.loop;
+            sendSeqSet();
+            rebuildWidgets();
+        }).active = canEdit;
         y += 24;
 
         // ---------------- 左栏：片段列表 ----------------
@@ -313,12 +322,22 @@ public class SequenceEditorScreen extends ProjectorScreen {
                     public void onSeek(double sec) {
                         // 移播放头 = 把流程定位到这个时刻（暂停状态下才允许，避免打断播放）
                         if (plane.sequence != null && !plane.sequence.playing) {
+                            // 本机立刻跟手（这一步不联网）
                             plane.sequence.seek(sec, gameTime());
-                            sendSeq("seqSeek", () -> {
-                                CompoundTag t = new CompoundTag();
-                                t.putDouble("sec", sec);
-                                return t;
-                            });
+                            // 【27.2.4-200 修】以前**每个鼠标事件**都发一个 seqSeek，
+                            // 而服务端每收到一个就广播整个平面 ⇒ 拖两下就是一场广播风暴。
+                            // 现在与滑杆同一口径：250 ms 最多发一次，松手时再补最后一下。
+                            long now = System.currentTimeMillis();
+                            if (now - lastPlayheadSendMs >= 250L) {
+                                lastPlayheadSendMs = now;
+                                sendSeq("seqSeek", () -> {
+                                    CompoundTag t = new CompoundTag();
+                                    t.putDouble("sec", sec);
+                                    return t;
+                                });
+                            } else {
+                                pendingPlayheadSec = sec;
+                            }
                         }
                     }
                 });
@@ -415,9 +434,12 @@ public class SequenceEditorScreen extends ProjectorScreen {
         double end = 3;
         // 默认接在已有流程的末尾，避免新加的片段全部叠在 0 秒上
         double maxEnd = plane.sequence.maxEndSec();
+        // 【27.2.2】上限是**动态**的（末尾 + 余量），所以这里不能用固定的 MAX_SECONDS：
+        // 用动态上限保证「新加的片段一定落在能拖到的范围内」。
+        double cap = Math.max(1.0, plane.sequence.dynamicMaxSec());
         if (maxEnd > 0) {
-            start = Math.min(SequenceClip.MAX_SECONDS - 1, maxEnd);
-            end = Math.min(SequenceClip.MAX_SECONDS, start + 3);
+            start = Math.min(cap - 1.0, maxEnd);
+            end = Math.min(cap, start + 3);
         }
         SequenceClip c = new SequenceClip(pickedWidget.id, start, end);
         plane.sequence.add(c);
@@ -465,6 +487,11 @@ public class SequenceEditorScreen extends ProjectorScreen {
     private long lastSeqSubmit;
     /** 有没有「被限流挡下、还没发出去」的改动（关界面时补发一次）。 */
     private boolean seqDirty;
+
+    /** 上一次发送 seqSeek（拖播放头）的时间；与上面的 seqSet 同一口径：250 ms 最多一次。 */
+    private long lastPlayheadSendMs;
+    /** 被限流挡下的最后一次播放头位置（关界面时补发）。 */
+    private double pendingPlayheadSec = Double.NaN;
 
     private void sendSeqSet() {
         sendSeqSet(true);
@@ -554,6 +581,16 @@ public class SequenceEditorScreen extends ProjectorScreen {
         // 被限流挡下的最后一次改动在这里补发，保证玩家拖到的最终值一定生效
         if (seqDirty) {
             sendSeqSet(true);
+        }
+        // 【27.2.4-200】播放头同理：拖动被限流挡下的最后一次位置在这里补发
+        if (!Double.isNaN(pendingPlayheadSec)) {
+            final double sec = pendingPlayheadSec;
+            pendingPlayheadSec = Double.NaN;
+            sendSeq("seqSeek", () -> {
+                CompoundTag t = new CompoundTag();
+                t.putDouble("sec", sec);
+                return t;
+            });
         }
         Minecraft.getInstance().setScreen(parent);
     }

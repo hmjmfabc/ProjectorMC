@@ -112,7 +112,9 @@ public final class SelectionRenderer {
 
         // 3) 控件边框
         for (Widget w : plane.widgets) {
-            double[] box = widgetAabb(w);
+            // 传**未旋转**的控件矩形：旋转由 addOutlineRotated 里的 w.rotPt 负责，
+            // 传旋转后的包围盒会变成「转两遍」（老 bug 之一）
+            double[] box = {w.x, w.y, w.x + w.w, w.y + w.h};
             addOutlineRotated(originArr, axisX, axisY, normal, base, w, box, widgetColor, 0.6);
         }
 
@@ -123,22 +125,14 @@ public final class SelectionRenderer {
         return new double[]{d.getStepX(), d.getStepY(), d.getStepZ()};
     }
 
-    /** 控件的旋转后包围盒（画布坐标）。 */
+    /**
+     * 控件的旋转后包围盒（画布坐标）。
+     * <p>【27.2.1-hotfix-144】直接转发 {@link Widget#rotatedAabb()} ——
+     * 以前这里自己算了一遍「绕左下角的四角」，而渲染又是另一套，
+     * 于是同一件事有两份实现（这正是「框不跟着转/框和内容对不上」的来源之一）。</p>
+     */
     public static double[] widgetAabb(Widget w) {
-        double[][ ] corners = {
-                TextRenderer.rot(w.x, w.y, w.rot, 0, 0),
-                TextRenderer.rot(w.x, w.y, w.rot, w.w, 0),
-                TextRenderer.rot(w.x, w.y, w.rot, w.w, w.h),
-                TextRenderer.rot(w.x, w.y, w.rot, 0, w.h)};
-        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
-        double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
-        for (double[] c : corners) {
-            minX = Math.min(minX, c[0]);
-            minY = Math.min(minY, c[1]);
-            maxX = Math.max(maxX, c[0]);
-            maxY = Math.max(maxY, c[1]);
-        }
-        return new double[]{minX, minY, maxX, maxY};
+        return w.rotatedAabb();
     }
 
     /** 画一个外发光边框。 */
@@ -163,24 +157,31 @@ public final class SelectionRenderer {
         quad(o, ax, ay, normal, base, x1, y0, x1 + w, y1, color);
     }
 
-    /** 画一个随控件旋转的描边。 */
+    /**
+     * 画一个随控件旋转的描边（框**跟着控件一起转**）。
+     *
+     * <p>【27.2.1-hotfix-144】这里以前把 {@code widgetAabb()} 的结果（**已经旋转过**的
+     * 包围盒）再绕一次轴心旋转 ⇒ 框被转了两遍；而且轴心用的还是左下角。
+     * 现在：传入的 {@code box} 是**未旋转的控件矩形**，四角统一走
+     * {@link Widget#rotPt(double, double)} 绕中心旋转 —— 与渲染、命中检测同源。</p>
+     */
     private void addOutlineRotated(double[] o, double[] ax, double[] ay, double[] normal, double base,
                                    Widget w, double[] box, int color, double width) {
         double minX = box[0], minY = box[1], maxX = box[2], maxY = box[3];
         double lw = Math.max(0.05, width);
-        double cx = w.x, cy = w.y;
-        double lx0 = minX - cx, ly0 = minY - cy;
-        double lx1 = maxX - cx, ly1 = maxY - cy;
+        // 局部坐标以控件左下角为原点（与 Widget.rotPt 的约定一致）
+        double lx0 = minX - w.x, ly0 = minY - w.y;
+        double lx1 = maxX - w.x, ly1 = maxY - w.y;
         double[][] edges = {
-                {lx0, ly0 - lw, lx1, ly0},
-                {lx0, ly1, lx1, ly1 + lw},
-                {lx0 - lw, ly0, lx0, ly1},
-                {lx1, ly0, lx1 + lw, ly1}};
+                {lx0, ly0 - lw, lx1, ly0},          // 下
+                {lx0, ly1, lx1, ly1 + lw},          // 上
+                {lx0 - lw, ly0, lx0, ly1},          // 左
+                {lx1, ly0, lx1 + lw, ly1}};         // 右
         for (double[] e : edges) {
-            double[] p0 = TextRenderer.rot(cx, cy, w.rot, e[0], e[1]);
-            double[] p1 = TextRenderer.rot(cx, cy, w.rot, e[2], e[1]);
-            double[] p2 = TextRenderer.rot(cx, cy, w.rot, e[2], e[3]);
-            double[] p3 = TextRenderer.rot(cx, cy, w.rot, e[0], e[3]);
+            double[] p0 = w.rotPt(e[0], e[1]);
+            double[] p1 = w.rotPt(e[2], e[1]);
+            double[] p2 = w.rotPt(e[2], e[3]);
+            double[] p3 = w.rotPt(e[0], e[3]);
             collector.canvasQuad(ax, ay, normal, o, p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1],
                     base, 0, 0, 0, 0, color);
         }

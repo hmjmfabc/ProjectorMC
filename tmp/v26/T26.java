@@ -38,7 +38,7 @@ public final class T26 {
         Files.createDirectories(media);
         Files.createDirectories(root.resolve("cache"));
 
-        Path small = media.resolve("small.mjpg");
+        Path small = media.resolve("small.mp4");
         Path big = media.resolve("big.mp4");
         // 注意：小文件必须**真的**小于下面设定的阈值，否则「内联算摘要」那条路根本走不到
         writeRandom(small, 512 * 1024);
@@ -57,7 +57,7 @@ public final class T26 {
         // 否则后台线程可能已经算完大文件、把全局计数从 1 变成 2，测试就变成看运气。
         check("第一次扫描只为「小文件」内联算摘要（大文件交给后台）",
                 LocalMedia.lastScanInlineDigests() == 1,
-                "扫描内联算了 " + LocalMedia.lastScanInlineDigests() + " 个摘要（期望 1：small.mjpg 512KB）");
+                "扫描内联算了 " + LocalMedia.lastScanInlineDigests() + " 个摘要（期望 1：small.mp4 512KB）");
         check("（参考）扫描期间全局摘要计数没有暴涨", afterFirst <= 2, "实得 " + afterFirst);
         check("摘要缓存里已经有条目", LocalMedia.digestCacheSize() >= 1,
                 "实得 " + LocalMedia.digestCacheSize());
@@ -103,7 +103,7 @@ public final class T26 {
                 !LocalMedia.hasWholeCached("0000000000000000000000000000000000000000"), "");
 
         // ---- ⑤ 索引过期时，扫描不许在调用线程上跑（**确定性**：不靠 TTL 计时） ----
-        Files.write(media.resolve("newer.mjpg"), new byte[64 * 1024]);   // 新文件 ⇒ 后台扫描必然要算摘要
+        Files.write(media.resolve("newer.mp4"), new byte[64 * 1024]);   // 新文件 ⇒ 后台扫描必然要算摘要
         LocalMedia.markScanStaleForTest();                               // 强制「索引已过期」
         long d3 = LocalMedia.digestsComputed();
         long t0 = System.nanoTime();
@@ -111,8 +111,9 @@ public final class T26 {
         long tookMs = (System.nanoTime() - t0) / 1_000_000L;
         check("rescanAsyncIfStale 立刻返回（不占用调用线程）",
                 tookMs < 100, "实得 " + tookMs + " ms");
-        check("过期的扫描**没有**在调用线程上算摘要",
-                LocalMedia.digestsComputed() == d3, "调用线程算了摘要 ⇒ 又把 IO 放回渲染线程了");
+        // 【160】这条以前写成「摘要计数没变」，但后台线程跑得快时计数当然会变 ⇒ **假失败**。
+        // 正确判据是「**哪个线程**做的扫描」，与快慢无关。
+        final String callingThread = Thread.currentThread().getName();
         check("扫描被交给后台（要么还在排队，要么已经由后台做完）",
                 LocalMedia.scanPending() || LocalMedia.digestsComputed() > d3,
                 "scanPending=false 且摘要计数没变 ⇒ 扫描没被安排");
@@ -124,6 +125,9 @@ public final class T26 {
         check("后台扫描会自己结束（不会永远 pending）", done, "");
         check("后台扫描确实算出了新文件的摘要",
                 LocalMedia.digestsComputed() > d3, "实得 " + (LocalMedia.digestsComputed() - d3) + " 次");
+        check("★ 这次过期扫描**不是**调用线程做的（而是后台线程）",
+                !LocalMedia.lastScanThreadName().equals(callingThread),
+                "扫描跑在 " + LocalMedia.lastScanThreadName() + " 上 ⇒ 又把 IO 放回渲染线程了");
 
         // ---- ⑥ 源码级不变量：渲染路径不许出现同步扫描与旧入口 ----
         String mc = read("src/main/java/top/hmjmfabc/projector/client/media/MediaCache.java");

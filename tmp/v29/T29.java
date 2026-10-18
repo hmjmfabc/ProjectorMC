@@ -71,15 +71,18 @@ public class T29 {
     private static void backendField() {
         VideoWidget w = new VideoWidget();
         check("默认后端 = 自动", w.backend == VideoWidget.BACKEND_AUTO);
-        check("默认既不强制内置也不强制 WaterMedia", !w.builtinForced() && !w.waterMediaForced());
-        check("名称显示为「自动」", "自动".equals(w.backendName()));
+        check("默认不强制 WaterMedia", !w.waterMediaForced());
 
-        w.backend = VideoWidget.BACKEND_BUILTIN;
-        check("强制内置判定正确", w.builtinForced() && !w.waterMediaForced());
-        check("名称显示为「内置」", "内置".equals(w.backendName()));
+        // 【27.2.4-201】内置后端已彻底下线：判定函数与显示名都不许再存在，
+        // 否则「自动」那条分支随时会被人接回内置帧序列解码。
+        String videoWidget = readFile("src/main/java/top/hmjmfabc/projector/common/widget/VideoWidget.java");
+        check("没有 builtinForced()（内置后端已删）", !videoWidget.contains("boolean builtinForced("));
+        check("没有 backendName()（界面不许提后端）", !videoWidget.contains("String backendName("));
+        String videos = readFile("src/main/java/top/hmjmfabc/projector/client/media/wm/WaterMediaVideos.java");
+        check("WaterMediaVideos 里没有「改用内置后端」的兜底", !videos.contains("builtinForced"));
 
         w.backend = VideoWidget.BACKEND_WATERMEDIA;
-        check("强制 WaterMedia 判定正确", w.waterMediaForced() && !w.builtinForced());
+        check("强制 WaterMedia 判定正确", w.waterMediaForced());
 
         CompoundTag tag = w.save();
         VideoWidget loaded = (VideoWidget) top.hmjmfabc.projector.common.widget.Widgets.load(tag);
@@ -520,7 +523,7 @@ public class T29 {
                 collector.contains("textured(real)")
                         && collector.contains("return textured(texture);")
                         && collector.contains("RenderType.textSeeThrough(texture)"));
-        check("透墙门槛走纯函数 + 配置（默认 0 = 只有贴到平面）",
+        check("透墙门槛走纯函数 + 配置（默认 0 = 不透视）",
                 world.contains("PlaneSide.seeThroughFromBack(")
                         && world.contains("renderBackfaceSeeThrough.get()")
                         && readFile("src/main/java/top/hmjmfabc/projector/ProjectorConfig.java")
@@ -531,11 +534,16 @@ public class T29 {
         check("朝南的墙：相机 z 更大 = 正面，z 更小 = 反面",
                 PlaneSide.isFront(southNormal, planeCenter, new double[]{0.5, 0.5, 3.5})
                         && !PlaneSide.isFront(southNormal, planeCenter, new double[]{0.5, 0.5, -3.5}));
-        check("反面贴面才透墙（正面/远离都不透）",
-                PlaneSide.seeThroughFromBack(true, 0.0, 0.0)
-                        && !PlaneSide.seeThroughFromBack(true, 2.0, 0.0)
-                        && !PlaneSide.seeThroughFromBack(false, 0.0, 0.0)
-                        && PlaneSide.seeThroughFromBack(true, 5.0, 8.0));
+        // 【27.2.2-160 用户口径】默认（range=0）**彻底不透视**：不透明墙必须挡得住控件。
+        // 调大 range 才恢复「贴着墙也能透墙看到」的老行为。
+        check("默认 0 = 不透视（不透明墙挡得住控件）",
+                !PlaneSide.seeThroughFromBack(true, 0.0, 0.0)
+                        && !PlaneSide.seeThroughFromBack(true, 0.5, 0.0)
+                        && !PlaneSide.seeThroughFromBack(false, 0.0, 0.0));
+        check("调大 range 才透墙（老行为的开关仍然在）",
+                PlaneSide.seeThroughFromBack(true, 5.0, 8.0)
+                        && !PlaneSide.seeThroughFromBack(true, 9.0, 8.0)
+                        && !PlaneSide.seeThroughFromBack(false, 1.0, 8.0));
         check("渲染阶段在半透明块之前（水面/玻璃不再挡掉水下内容）",
                 client.contains("AFTER_ENTITIES")
                         && !client.contains("Stage.AFTER_TRANSLUCENT_BLOCKS"));
@@ -546,9 +554,13 @@ public class T29 {
                 input.contains("event.isAttack()") && input.contains("handleVideoControl"));
         check("视频浮层由渲染器画出", renderer.contains("VideoOverlayRenderer.draw"));
         String overlay = readFile("src/main/java/top/hmjmfabc/projector/client/render/VideoOverlayRenderer.java");
-        check("浮层几何用**画布坐标**（少加锚点偏移 ⇒ 播放键被画到画布原点 = 「不显示了」）",
-                overlay.contains("offset(w, w.controlBox())")
-                        && overlay.contains("offset(w, w.progressBox())"));
+        // 【27.2.1-hotfix-144 契约变更】音乐那套绘制原语的入参是**控件局部坐标**，
+        // 所以浮层也全程用局部坐标；「局部 → 画布」的加法必须**不存在**
+        // （多减多加都会让播放键/进度条整体平移 — 本轮 offset bug 的根因）。
+        check("浮层几何用**局部坐标**（不许再有局部→画布的 offset 加法）",
+                overlay.contains("double[] b = w.controlBox();")
+                        && overlay.contains("double[] box = w.progressBox();")
+                        && !overlay.contains("w.x + local[0]"));
         // 【27.1.3】直播/HLS 是无限流：没有总时长，画已播放段就会「乱跳」
         check("直播不画已播放段（只留底条）",
                 overlay.contains("final boolean live") && overlay.contains("if (!live && w.durationKnown())"));

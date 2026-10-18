@@ -93,7 +93,7 @@ public final class OnlineVideoLink {
     /** 认得的视频扩展名（猜文件名用；顺带能挡住 "http://x.com/page.html" 这类明显不是视频的直链）。 */
     private static final String[] VIDEO_EXTS = {
             "mp4", "m4v", "webm", "mkv", "mov", "avi", "flv", "ts", "m2ts", "mpg", "mpeg",
-            "3gp", "wmv", "mjpg", "mjpeg", "m3u8", "zip", "mpd"};
+            "3gp", "wmv", "m3u8", "mpd"};      // 【27.2.4-201】mjpg / mjpeg / zip 不再是视频
 
     /**
      * 这个字符串能不能当在线视频链接用。
@@ -125,8 +125,14 @@ public final class OnlineVideoLink {
             return "";
         }
         String s = raw.trim();
-        String lower = s.toLowerCase(Locale.ROOT);
-        if (!lower.startsWith("http://") && !lower.startsWith("https://") && !s.isEmpty()) {
+        if (s.isEmpty()) {
+            return s;
+        }
+        // 【27.2.4-200】只给「**完全没有协议**」的串补 https。
+        // 注意不能只看「是不是 http(s)」：那样 file://、ftp:// 之类会被拼成
+        // "https://file://…"，绕过 acceptable() 的协议白名单（T30 里钉过这条）。
+        boolean hasScheme = s.matches("^[A-Za-z][A-Za-z0-9+.\\-]*://.*");
+        if (!hasScheme) {
             s = "https://" + s;
         }
         return s;
@@ -138,10 +144,12 @@ public final class OnlineVideoLink {
         if (s.isEmpty()) {
             return Target.none();
         }
+        // 【27.2.4-200 修】顺序反了：normalize() 的职责就是给「没写协议的链接」补 https，
+        // 而 acceptable() 要求开头必须是 http(s) ⇒ 先校验等于把所有裸域名链接静默丢掉。
+        s = normalize(s);
         if (!acceptable(s)) {
             return Target.bad(s);
         }
-        s = normalize(s);
         String lower = s.toLowerCase(Locale.ROOT);
 
         // ① B 站短链：要先去展开（展开在 Resolver 里做），这里认出来就行
@@ -232,11 +240,6 @@ public final class OnlineVideoLink {
             }
         }
         return "";
-    }
-
-    /** 扩展名是不是内置解码器能直接放的（MJPEG 单文件 / ZIP 帧序列）。 */
-    public static boolean nativeExt(String ext) {
-        return "mjpg".equals(ext) || "mjpeg".equals(ext) || "zip".equals(ext);
     }
 
     // ------------------------------------------------------------------

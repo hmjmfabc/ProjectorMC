@@ -13,6 +13,15 @@ import top.hmjmfabc.projector.common.widget.VideoWidget;
  * 免得共面 Z-fighting（本项目的复发榜第一）。</p>
  */
 public final class VideoOverlayRenderer {
+
+    /**
+     * 绘制代理（只借 MusicWidget 那套几何原语）。
+     *
+     * <p>【27.2.4-200】静态复用：渲染是单线程的，每帧只覆写 x/y/w/h/rot 四个字段。
+     * 以前每帧 `new MusicWidget()`，而 {@code Widget} 的字段初始化里有
+     * {@code UUID.randomUUID()}（SecureRandom）与一个 ArrayList，等于每帧制造垃圾。</p>
+     */
+    private static final MusicWidget PROXY = new MusicWidget();
     private VideoOverlayRenderer() {
     }
 
@@ -27,20 +36,27 @@ public final class VideoOverlayRenderer {
         if (w.w <= 1 || w.h <= 1) {
             return;
         }
-        // 临时锚点：音乐控件的绘制函数只读这三个字段 ⇒ 形状/配色与音乐**逐像素一样**
-        MusicWidget a = new MusicWidget();
+        // 临时代理控件：只用来借音乐控件那套绘制原语（形状/配色与音乐**逐像素一样**）。
+        // 【27.2.1-hotfix-144 定稿】音乐那套原语的入参是**控件局部坐标**（相对左下角），
+        // 所以这里全程用局部坐标：画布位置/旋转由原语内部按代理控件的 x/y/rot 处理。
+        // ⚠ 这里**不许**再出现 on-canvas 的加法（offset/`w.x + …`）——
+        //   那会让每个原语额外平移一次（本轮偏移 bug 的根因）。
+        // 【27.2.4-200 修】渲染线程、每个可见视频控件每帧一次：以前每次都 new 一个 MusicWidget，
+        // 而 Widget 的字段初始化含 UUID.randomUUID()（SecureRandom）+ ArrayList ⇒ 每帧纯垃圾。
+        // 改成静态复用的代理对象（渲染是单线程的，每帧覆写四个字段即可）。
+        MusicWidget a = PROXY;
         a.x = w.x;
         a.y = w.y;
+        a.w = w.w;
+        a.h = w.h;
         a.rot = w.rot;
 
         long now = WidgetRenderer.clientTimeMs();
         boolean playing = !w.paused;
 
         // ---- 进度条：与音乐控件的条同一套观感（白色胶囊 + 圆点）----
-        // ⚠ 必须转成**画布坐标**：音乐那套绘制函数内部会做 x - w.x 再旋转
-        //   （音乐自己也是用 offset(w, w.xxxBox()) 传进去的）。少了这一步，
-        //   播放键与进度条会被画到**画布原点**（锚点方块那个角），看着就像「不显示了」。
-        double[] box = offset(w, w.progressBox());
+        // 局部坐标（相对左下角）—— 与 VideoWidget.progressBox() 的约定一致
+        double[] box = w.progressBox();
         double barH = Math.max(0.6, box[3] - box[1]);
         double midY = (box[1] + box[3]) / 2.0;
         double x0 = box[0];
@@ -62,7 +78,7 @@ public final class VideoOverlayRenderer {
         }
 
         // ---- 播放键：**与音乐控件逐字相同**的配方（白色细圆环 + 白色图形）----
-        double[] b = offset(w, w.controlBox());
+        double[] b = w.controlBox();
         double size = b[2] - b[0];
         double cx = (b[0] + b[2]) / 2.0;
         double cy = (b[1] + b[3]) / 2.0;
@@ -100,17 +116,10 @@ public final class VideoOverlayRenderer {
                 ctx.depth() + n * LAYER);
     }
 
-    /**
-     * 控件局部坐标 → 画布坐标（加上锚点）。
-     *
-     * <p>{@code VideoWidget.controlBox()/progressBox()} 返回的是**相对锚点**的局部坐标，
-     * 而 {@code MusicWidgetRenderer} 的绘制函数要的是**画布坐标**
-     * （它们内部按 {@code x - w.x} 取局部量再旋转）—— 两边差一个锚点偏移，
-     * 少了这个换算就会画到画布原点去。</p>
-     */
-    private static double[] offset(VideoWidget w, double[] local) {
-        return new double[]{w.x + local[0], w.y + local[1], w.x + local[2], w.y + local[3]};
-    }
+    // ⚠【27.2.1-hotfix-144】这里以前有一个 `offset(w, local)`（局部 → 画布）。
+    //   它是本轮「播放键/进度条整体偏移」的根源：音乐那套原语的入参本来就是**局部坐标**，
+    //   再加一次锚点偏移就等于平移两遍。**这个换算已经删掉，不要再加回来** ——
+    //   本文件全程用局部坐标，画布位置由原语内部的 (x - 中心) 处理。
 
     /** 每个控件上一次打「浮层几何」的时间（同一控件 2 秒最多一行）。 */
     private static final java.util.Map<java.util.UUID, Long> LAST_GEOMETRY_MS =

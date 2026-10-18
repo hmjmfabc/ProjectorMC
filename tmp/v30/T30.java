@@ -100,10 +100,11 @@ public class T30 {
         check("认得 yhdm 播放页", y.kind() == Kind.YHDM && "kZpXbDf/1".equals(y.id()));
         Target mp4 = OnlineVideoLink.parse("https://cdn.example.com/a/b/clip.mp4?token=xyz");
         check("直链：认出 mp4（参数不影响）", mp4.kind() == Kind.DIRECT && "mp4".equals(mp4.ext()));
+        // 【27.2.4-201】内置帧序列后端已下线 ⇒ mjpg / mjpeg / zip 不再是「视频扩展名」
         Target mjpg = OnlineVideoLink.parse("https://a.com/x.mjpeg");
-        check("直链：mjpg/mjpeg 是内置后端能直接放的",
-                "mjpeg".equals(mjpg.ext()) && OnlineVideoLink.nativeExt("mjpeg")
-                        && OnlineVideoLink.nativeExt("zip") && !OnlineVideoLink.nativeExt("mp4"));
+        check("直链：mjpeg 不再被当成视频", mjpg.ext().isEmpty());
+        check("直链：zip 也不再被当成视频",
+                OnlineVideoLink.extOf("https://a.com/frames.zip").isEmpty());
         Target noExt = OnlineVideoLink.parse("https://a.com/watch?v=1");
         check("直链：猜不到扩展名就留空（下载时看 Content-Type）", noExt.ext().isEmpty());
         check("扩展名只从路径取（不会把 ?a=1 当成扩展名）",

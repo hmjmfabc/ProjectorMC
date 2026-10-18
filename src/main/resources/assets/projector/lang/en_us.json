@@ -1,7 +1,7 @@
 {
   "key.categories.projector": "Projector",
   "key.projector.capture": "Capture plane / Open dialog (U)",
-  "key.projector.cancel": "Clear selection (I)",
+  "key.projector.cancel": "Clear selection (Esc)",
   "key.projector.media_help": "Show media folders (O)",
   "projector.msg.no_target": "§eNo block face under the crosshair",
   "projector.msg.selection_cleared": "§7Selection cleared",
@@ -34,7 +34,7 @@
   "projector.msg.font_failed": "§cFont save or hash verification failed; rejected (see server log)",
   "projector.msg.font_not_on_server": "§cThat font is not installed on the server; ask an admin to upload it from the font selector.",
   "projector.msg.seq_hint": "§7Sequence: click a widget in the preview, press \"Add to sequence\", then drag the bar (both ends are draggable).",
-  "projector.msg.seq_empty": "§7This plane has no sequence clips yet",
+  "projector.msg.seq_empty": "No sequence added yet",
   "projector.msg.seq_added": "§aAdded to sequence: %s",
   "projector.msg.seq_last_kept": "§7The last clip never plays an exit animation; it stays on the plane after the sequence ends.",
   "projector.msg.chess_hint": "§7Board games: right-click the widget -> Edit -> \"Open game screen\" to play (all six games share this entry).",
@@ -64,5 +64,13 @@
   "projector.msg.web_no_page": "The page has no picture yet: make sure the browser in Termux is still running",
   "projector.msg.web_need_aim": "Aim at the web widget first, then press I to type",
   "projector.msg.web_typing": "Typing to the page: press Enter to send (not sent to chat)",
-  "projector.msg.web_world_hint": "§fLeft click to operate, press I to type"
+  "projector.msg.web_world_hint": "§fLeft click to operate, press I to type",
+  "key.projector.seq_replay": "Replay sequence (I)",
+  "projector.msg.seq_replay": "Replaying sequence",
+  "projector.widget.item": "Item display",
+  "projector.msg.item_placed": "Placed %s",
+  "projector.msg.item_taken": "Took out %s",
+  "projector.msg.item_empty_hand": "You are not holding that item",
+  "projector.msg.item_none_selected": "No item selected for this display",
+  "projector.msg.item_need_admin": "Only admins (permission level 2+) may bind commands"
 }

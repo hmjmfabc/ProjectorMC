@@ -216,6 +216,14 @@ public final class TextLayout {
             if (box == null) {
                 // 字体不含该字符：退化成一个方框
                 double adv = fontSize * 0.5;
+                // 【27.2.4-200 修】兜底分支以前 `continue` 掉了换行判定，
+                // 而「数行数」那一遍是照常换行的 ⇒ 两遍行数不一致（文字溢出 / 垂直原点错），
+                // 中文落在 Caviar Dreams 上时全走这条路，所以这一条特别容易被看到。
+                if (wrapWidth > 0 && penX > 0 && penX + adv > wrapWidth) {
+                    penX = 0;
+                    prevCp = -1;
+                    penY -= lineHeight;
+                }
                 out.add(fallbackRun(originX + penX, penY, adv, fontSize, c));
                 penX += adv;
                 prevCp = -1;

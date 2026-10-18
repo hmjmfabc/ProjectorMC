@@ -6,13 +6,11 @@ import top.hmjmfabc.projector.common.OnlineVideoLink;
 /**
  * 视频控件。
  *
- * <p>内置后端只认 MJPEG / ZIP 帧序列（Android 上无法可靠调用外部解码程序）；
- * 装了 WaterMedia 模组时常见格式（MP4/WebM/MKV…）交给它播放，见 27.1.2。
- * 因此采用两种「逐帧静态图」格式：</p>
- * <ul>
- *   <li><b>MJPEG (.mjpg/.mjpeg/.avi-MJPEG)</b>：把每帧 JPEG 直接切成独立图片解码；</li>
- *   <li><b>PNG/JPEG 帧序列 (.zip 或文件夹)</b>：按文件名排序逐帧播放。</li>
- * </ul>
+ * <p>【27.2.4-201】<b>唯一的播放后端是外部解码器（WaterMedia）</b>：MP4 / WebM / MKV / MOV / HLS…
+ * 内置的 MJPEG / ZIP 帧序列解码器自 Build 112 起已下线，这类素材既不能上传、
+ * 也不会被识别成视频（旧存档里的控件画「格式不支持」占位）。
+ * 因此 {@code frameCount} 对本项目的视频恒为 1 —— 播放位置只以<b>毫秒</b>为准
+ * （{@link #pausedMs} / {@link #mediaDurationMs}），帧号只是旧存档的残留字段。</p>
  *
  * <p>{@code startTimeMs} 为「世界时间锚点」，让同一存档内所有客户端播放进度一致；
  * 为 0 时表示使用各自本地时间。</p>
@@ -70,6 +68,25 @@ public class VideoWidget extends Widget {
     public transient long mediaPositionMs;
 
     /**
+     * 【27.2.4-201】上面那个位置**上一次被解码器更新**的时刻。
+     *
+     * <p>解码器只在「正在渲染这个控件」时报位置。离开视野 / 暂停 / 刚续播时，
+     * {@code mediaPositionMs} 会停在上一个值；如果无条件信它，
+     * 进度条就会一直卡在那个毫秒数（本轮的「暂停后位置不对」与「续播不前进」都撞到这一点）。
+     * 所以只有「最近 {@link #MEDIA_POSITION_STALE_MS} 内报过」才算数，否则退回时间锚点。</p>
+     */
+    public transient long mediaPositionAtMs;
+
+    /** 解码器报的位置多久没更新就作废（毫秒）。 */
+    public static final long MEDIA_POSITION_STALE_MS = 750L;
+
+    /** 解码器报了一个位置（唯一的写入口，顺手盖上时间戳）。 */
+    public void noteMediaPosition(long ms) {
+        mediaPositionMs = Math.max(0L, ms);
+        mediaPositionAtMs = System.currentTimeMillis();
+    }
+
+    /**
      * 【hotfix-101】暂停时冻结的位置（毫秒）。
      *
      * <p>以前只有一个 {@code pausedFrame}（帧号），而外部解码器的视频根本没有帧号
@@ -79,13 +96,10 @@ public class VideoWidget extends Widget {
     public long pausedMs;
 
     /**
-     * 播放后端（27.1.2）：
-     * <ul>
-     *   <li>{@link #BACKEND_AUTO}（默认）：MP4 / WebM / MKV 等常见格式交给 WaterMedia（装了才生效），
-     *       MJPEG / ZIP 用本项目自带后端；</li>
-     *   <li>{@link #BACKEND_BUILTIN}：强制内置后端（只看 MJPEG / ZIP 帧序列）；</li>
-     *   <li>{@link #BACKEND_WATERMEDIA}：强制 WaterMedia（装没装都能设，没装就等于自动）。</li>
-     * </ul>
+     * 播放后端（27.1.2 的历史字段）：内置后端已于 27.2.4-201 彻底下线，
+     * 所以 {@link #BACKEND_AUTO} 与 {@link #BACKEND_WATERMEDIA} 现在等价（都交给外部解码器）；
+     * {@link #BACKEND_BUILTIN} 只可能出现在旧存档里，一律按自动处理。
+     * 字段与 {@code saveExtra/loadExtra} 保留，只为让旧存档读得进来（不自造新键）。</p>
      */
     public int backend = BACKEND_AUTO;
 
@@ -93,20 +107,8 @@ public class VideoWidget extends Widget {
     public static final int BACKEND_BUILTIN = 1;
     public static final int BACKEND_WATERMEDIA = 2;
 
-    public boolean builtinForced() {
-        return backend == BACKEND_BUILTIN;
-    }
-
     public boolean waterMediaForced() {
         return backend == BACKEND_WATERMEDIA;
-    }
-
-    public String backendName() {
-        return switch (backend) {
-            case BACKEND_BUILTIN -> "内置";
-            case BACKEND_WATERMEDIA -> "WaterMedia";
-            default -> "自动";
-        };
     }
 
     @Override
@@ -206,8 +208,12 @@ public class VideoWidget extends Widget {
         if (paused) {
             return Math.max(0L, Math.min(d, pausedMs));
         }
-        // 外部解码器在播：用它自报的位置最准（进度条不会跟画面错位）
-        if (mediaDurationMs > 0 && mediaPositionMs > 0) {
+        // 外部解码器在播：用它自报的位置最准（进度条不会跟画面错位）。
+        // 【27.2.4-201】但只认**新鲜的**位置：解码器只在渲染时报，
+        // 暂停 / 离开视野 / 刚续播时它会停在上一个值，无条件信它就会卡住不动。
+        if (mediaDurationMs > 0 && mediaPositionMs > 0
+                && mediaPositionAtMs > 0
+                && nowMs - mediaPositionAtMs <= MEDIA_POSITION_STALE_MS) {
             return Math.max(0L, Math.min(mediaDurationMs, mediaPositionMs));
         }
         long elapsed = startTimeMs > 0 ? Math.max(0L, nowMs - startTimeMs) : nowMs;
@@ -251,6 +257,7 @@ public class VideoWidget extends Widget {
         } else {
             startTimeMs = nowMs - pos;
             mediaPositionMs = pos;      // 外部解码器下一帧会对上
+            mediaPositionAtMs = nowMs;
             pausedMs = pos;
         }
     }
@@ -287,6 +294,7 @@ public class VideoWidget extends Widget {
         }
         startTimeMs = nowMs - pos;
         mediaPositionMs = pos;
+        mediaPositionAtMs = nowMs;
         paused = false;
     }
 
