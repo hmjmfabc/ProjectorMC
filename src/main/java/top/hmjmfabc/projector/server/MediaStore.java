@@ -97,7 +97,8 @@ public final class MediaStore extends SavedData {
 
     public static MediaStore get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(
-                new SavedData.Factory<>(MediaStore::new, MediaStore::load), FILE_ID);
+                new SavedData.Factory<>(MediaStore::new, MediaStore::load,
+                        net.minecraft.util.datafix.DataFixTypes.LEVEL), FILE_ID);
     }
 
     public static MediaStore load(CompoundTag tag, HolderLookup.Provider registries) {

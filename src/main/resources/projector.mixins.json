@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "top.hmjmfabc.projector.fabric.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "CrashReportMixin"
+  ],
+  "client": [
+    "ChatScreenMixin",
+    "KeyboardHandlerMixin",
+    "MinecraftInteractionMixin",
+    "MinecraftSetScreenMixin",
+    "MouseHandlerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

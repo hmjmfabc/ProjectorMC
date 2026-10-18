@@ -273,7 +273,7 @@ public final class MediaCache {
     static java.util.function.Consumer<top.hmjmfabc.projector.network.Payloads.MediaRequest> SENDER =
             req -> Minecraft.getInstance().execute(() -> {
                 try {
-                    net.neoforged.neoforge.network.PacketDistributor.sendToServer(req);
+                    top.hmjmfabc.projector.compat.neo.network.PacketDistributor.sendToServer(req);
                 } catch (Throwable ignored) {
                 }
             });

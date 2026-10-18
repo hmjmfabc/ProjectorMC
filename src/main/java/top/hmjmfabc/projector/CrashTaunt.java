@@ -1,8 +1,8 @@
 package top.hmjmfabc.projector;
 
-import net.neoforged.fml.CrashReportCallables;
-import net.neoforged.fml.ISystemReportExtender;
-import net.neoforged.fml.ModList;
+import top.hmjmfabc.projector.compat.fml.CrashReportCallables;
+import top.hmjmfabc.projector.compat.fml.ISystemReportExtender;
+import top.hmjmfabc.projector.compat.fml.ModList;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -324,7 +324,7 @@ public final class CrashTaunt {
     /** 找 logs 目录：优先 FML 的游戏目录，取不到就用工作目录下的 logs/。 */
     private static java.nio.file.Path logDir() {
         try {
-            java.nio.file.Path p = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("logs");
+            java.nio.file.Path p = top.hmjmfabc.projector.compat.fml.loading.FMLPaths.GAMEDIR.get().resolve("logs");
             if (java.nio.file.Files.isDirectory(p)) return p;
         } catch (Throwable ignored) {
             // 退回下面那条

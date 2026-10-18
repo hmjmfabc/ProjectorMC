@@ -1,0 +1,11 @@
+accessWidener v2 named
+# 音乐控件需要直接向游戏的音频引擎借一条流式声道
+#（SoundManager.soundEngine / SoundEngine.channelAccess / SoundEngine.library）
+# 对应 NeoForge 版的 src/main/resources/META-INF/accesstransformer.cfg，三条一一对应。
+accessible field net/minecraft/client/sounds/SoundManager soundEngine Lnet/minecraft/client/sounds/SoundEngine;
+accessible field net/minecraft/client/sounds/SoundEngine channelAccess Lnet/minecraft/client/sounds/ChannelAccess;
+accessible field net/minecraft/client/sounds/SoundEngine library Lcom/mojang/blaze3d/audio/Library;
+
+# NeoForge 把 LocalPlayer#getPermissionLevel 放成了 public（原版是 protected）。
+# 本模组的「管理员判定」要直接读它（ClientPermissions / FontSelectorScreen / MediaUploader）。
+accessible method net/minecraft/client/player/LocalPlayer getPermissionLevel ()I

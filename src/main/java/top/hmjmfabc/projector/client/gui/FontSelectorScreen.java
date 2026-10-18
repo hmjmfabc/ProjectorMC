@@ -136,7 +136,7 @@ public class FontSelectorScreen extends ProjectorScreen {
         }
         try {
             byte[] data = Files.readAllBytes(found);
-            net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+            top.hmjmfabc.projector.compat.neo.network.PacketDistributor.sendToServer(
                     new top.hmjmfabc.projector.network.Payloads.FontUpload(
                             id, found.getFileName().toString(), data));
             previewMessage = "\u5df2\u53d1\u9001\u4e0a\u4f20\uff08" + data.length + " \u5b57\u8282\uff09\uff0c\u7b49\u5f85\u670d\u52a1\u7aef\u6838\u9a8c";

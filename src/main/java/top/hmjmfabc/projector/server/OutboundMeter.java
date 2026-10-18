@@ -40,7 +40,8 @@ public final class OutboundMeter extends SavedData {
 
     public static OutboundMeter get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(
-                new SavedData.Factory<>(OutboundMeter::new, OutboundMeter::load), FILE_ID);
+                new SavedData.Factory<>(OutboundMeter::new, OutboundMeter::load,
+                        net.minecraft.util.datafix.DataFixTypes.LEVEL), FILE_ID);
     }
 
     public static OutboundMeter load(CompoundTag tag, HolderLookup.Provider registries) {

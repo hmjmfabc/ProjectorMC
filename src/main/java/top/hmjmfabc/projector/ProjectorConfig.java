@@ -1,6 +1,6 @@
 package top.hmjmfabc.projector;
 
-import net.neoforged.neoforge.common.ModConfigSpec;
+import top.hmjmfabc.projector.compat.neo.common.ModConfigSpec;
 import org.apache.commons.lang3.tuple.Pair;
 
 /**

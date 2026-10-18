@@ -3,7 +3,7 @@ package top.hmjmfabc.projector.client.media.wm;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.fml.ModList;
+import top.hmjmfabc.projector.compat.fml.ModList;
 import top.hmjmfabc.projector.Projector;
 
 import java.lang.reflect.Constructor;
@@ -382,6 +382,13 @@ public final class WaterMediaBridge {
         private boolean released;
         private Boolean loopState;
         private int preRenderFailures;
+        /** 【27.2.4-snapshot-203】会话创建时刻：用来报"已经等了多久还没出帧"。 */
+        private final long createdMs = System.currentTimeMillis();
+
+        /** 这个会话建了多久（毫秒）。诊断用。 */
+        public long ageMs() {
+            return Math.max(0L, System.currentTimeMillis() - createdMs);
+        }
 
         Session(Dialect dialect, Object player, Path file) {
             this.dialect = dialect;

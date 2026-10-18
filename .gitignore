@@ -1,91 +1,12 @@
-### Gradle ###
-.gradle
+# Gradle / Loom
+.gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/**/build/
-
-### IntelliJ IDEA ###
-.idea/
-*.iws
-*.iml
-*.ipr
-out/
-!**/src/**/out/
-
-.run/
-
-### Eclipse ###
-.apt_generated
-.classpath
-.eclipse/
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/**/bin/
-
-### VS Code ###
-.vscode/
-
-### Mac OS ###
-.DS_Store
-
-### Minecraft Modding ###
 run/
-!**/src/**/run/
-**/src/generated/**/.cache/
-repo/
-!**/src/**/repo/
-
-### 投影仪 / Projector（本工作区特有）###
-# 运行期日志与日志副本：含玩家名/UUID/IP，绝不入库
 logs/
-logs_copy/
-# 临时验证 / 反编译 / 构建脚本产物：只放行纯逻辑验证脚本与其素材
-/tmp/*
-!/tmp/run-verify.sh
-!/tmp/run-all.sh
-!/tmp/v*/
-/tmp/v*/*
-!/tmp/v*/T*.java
-!/tmp/v*/FrameCount.java
-!/tmp/v*/sample.mjpg
-# 与本模组无关、恰好放在构建工作区里的其它项目目录（绝不能被 git add -A 扫进本仓库）
-/NetMusic-1.21/
-# ⚠ WaterMedia 的源码/二进制：PolyForm Strict 1.0.0（禁止使用与再分发），
-#   只作为「查它公开 API 名字」的参考资料放在工作区，**绝不能进本仓库**。
-/watermedia*/
-/waterframes*/
-/watervision*/
-# 会话导出与根目录散落的字体副本（构建只读 src/main/resources 下的那份）
-dsh-session-*.zip
-/minecraft.ttf
-/caviar_dreams.ttf
-# 内部交接文档（含本机绝对路径与调试细节，不放进公开仓库）
-AGENTS.md
-HANDOVER.md
-LESSONS.md
-TODO_NEXT.md
-*.bak
-# 音乐控件的两个第三方解码库（jflac-codec=BSD、javasound-aac=LGPL-2.1）：
-# 与字体同理，源码仓库不分发二进制，构建前自行放进 libs/（mp3spi 由 Gradle 从
-# Maven Central 自动下载，不需要手动放）。详见 NOTICE 与 README「从源码构建」。
-/libs/
-# 第三方字体资源：Minecraft 自带字体（Mojang 资产）与 Caviar Dreams 版权归各自作者，
-# 仓库不再分发；构建前请自行放入 src/main/resources/assets/projector/font/
-/src/main/resources/assets/projector/font/minecraft.ttf
-/src/main/resources/assets/projector/font/caviar_dreams.ttf
-
-# 第三方参考源码（MIT，只读参考，不入库）
-/Bilibili-Media-Mod-2-neoforge/
-/NetMusic-1.21/
-/watermedia*/
-
-# 第三方安卓兼容层源码/二进制（GPL-3.0：本模组只按 modid 检测，不引用其代码，不入库）
-/WATERMeDIA-Android-Bridge-main/
-
-# 与本模组无关的第三方插件源码（只作参考，不入库）
-/NetMusic-Plugins/
-/HANDOVER-*.md
+# 第三方资产与本地库（与上游同一口径：不入库）
+libs/*.jar
+libs/SHA256SUMS
+src/main/resources/assets/projector/font/*.ttf
+# 开发辅助
+tmp-*/
+*.log

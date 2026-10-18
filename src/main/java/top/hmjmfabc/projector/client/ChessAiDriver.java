@@ -2,7 +2,7 @@ package top.hmjmfabc.projector.client;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.nbt.CompoundTag;
-import net.neoforged.neoforge.network.PacketDistributor;
+import top.hmjmfabc.projector.compat.neo.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 import top.hmjmfabc.projector.Projector;
 import top.hmjmfabc.projector.client.media.MediaCache;

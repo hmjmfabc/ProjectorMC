@@ -2,7 +2,6 @@ package top.hmjmfabc.projector.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
-import net.neoforged.neoforge.client.settings.KeyConflictContext;
 import top.hmjmfabc.projector.Projector;
 
 /**
@@ -22,14 +21,12 @@ public final class ProjectorKeys {
 
     public static final KeyMapping KEY_CAPTURE = new KeyMapping(
             "key.projector.capture",
-            KeyConflictContext.IN_GAME,
             InputConstants.Type.KEYSYM,
             InputConstants.KEY_U,
             CATEGORY);
 
     public static final KeyMapping KEY_CANCEL = new KeyMapping(
             "key.projector.cancel",
-            KeyConflictContext.IN_GAME,
             InputConstants.Type.KEYSYM,
             // 用户要求：取消圈选由 I 改为 Esc。
             // 注意 Esc 在原版里是「打开暂停菜单」，所以 ClientInputHandler 里必须
@@ -39,7 +36,6 @@ public final class ProjectorKeys {
 
     public static final KeyMapping KEY_MEDIA_HELP = new KeyMapping(
             "key.projector.media_help",
-            KeyConflictContext.IN_GAME,
             InputConstants.Type.KEYSYM,
             InputConstants.KEY_O,
             CATEGORY);
@@ -54,7 +50,6 @@ public final class ProjectorKeys {
      */
     public static final KeyMapping KEY_SEQ_REPLAY = new KeyMapping(
             "key.projector.seq_replay",
-            KeyConflictContext.IN_GAME,
             InputConstants.Type.KEYSYM,
             InputConstants.KEY_I,
             CATEGORY);
@@ -62,7 +57,7 @@ public final class ProjectorKeys {
     private ProjectorKeys() {
     }
 
-    public static void register(net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent event) {
+    public static void register(top.hmjmfabc.projector.compat.neo.client.event.RegisterKeyMappingsEvent event) {
         event.register(KEY_CAPTURE);
         event.register(KEY_CANCEL);
         event.register(KEY_MEDIA_HELP);

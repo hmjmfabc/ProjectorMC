@@ -5,8 +5,8 @@ import net.minecraft.client.gui.layouts.AbstractLayout;
 import net.minecraft.client.gui.layouts.Layout;
 import net.minecraft.client.gui.layouts.LayoutElement;
 import net.minecraft.client.gui.layouts.LayoutSettings;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.api.distmarker.OnlyIn;
+import top.hmjmfabc.projector.compat.distmarker.Dist;
+import top.hmjmfabc.projector.compat.distmarker.OnlyIn;
 
 import java.util.Iterator;
 import java.util.List;

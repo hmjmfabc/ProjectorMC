@@ -29,19 +29,35 @@ public final class WaterMediaVideos {
 
     /** 位置差多少就算「该跳了」（两侧都是墙钟，正常播放时只有几十毫秒误差）。 */
     public static final long SEEK_TOLERANCE_MS = 1500L;
-    /** 连续失败几次就不再尝试 WaterMedia（避免对着一个坏文件反复重开）。 */
-    private static final int MAX_FAILURES = 2;
+    /**
+     * 【27.2.4-snapshot-203】打不开时的**冷却**（毫秒），失败越多等得越久。
+     *
+     * <p>⚠ 以前这里是"连续 2 次就 <b>永久禁用</b>这个控件"。玩家还在**逐字打链接**时，
+     * 每敲一个字符都会拿 `https://b2` 这种半截地址去开一次 ⇒ 两次就把控件烧成永久禁用，
+     * 之后改成完整链接<b>也不会再试</b> ⇒ 画面永远停在占位块（红块「放不了」），
+     * 而编辑器里的状态行还写着"交给解码器"，把玩家引去查解码器。</p>
+     *
+     * <p>现在：半截/不合法地址<b>不算失败</b>；真失败则进冷却（5s → 10s → 20s → 40s → 60s 封顶）；
+     * 换链接、点播放键、删了重建都会立刻复位。</p>
+     */
+    private static final long RETRY_COOLDOWN_MIN_MS = 5_000L;
+    private static final long RETRY_COOLDOWN_MAX_MS = 60_000L;
     /** 【27.1.3】流式多久还没起播就改走下载（毫秒）。 */
     private static final long STREAM_READY_TIMEOUT_MS = 12_000L;
 
     private static final Map<UUID, Entry> SESSIONS = new ConcurrentHashMap<>();
-    private static final Set<UUID> DISABLED = ConcurrentHashMap.newKeySet();
 
     private static final class Entry {
         volatile WaterMediaBridge.Session session;
         volatile boolean loading;
         volatile int failures;
         volatile long lastLogMs;
+        /** 上次尝试时的"源"（在线链接或本地素材哈希）：源一变就复位失败计数。 */
+        volatile String lastSource = "";
+        /** 冷却到什么时候（0 = 现在就能试）。 */
+        volatile long retryAfterMs;
+        /** 上次失败的原始原因（冷却日志里带出来，别只说"打不开"）。 */
+        volatile String lastError = "";
         /** 【27.1.3】这次会话是「流式」时记下的开始时刻（0 = 不是流式）。 */
         volatile long streamStartedMs;
 
@@ -54,14 +70,12 @@ public final class WaterMediaVideos {
         if (w == null || !WaterMediaBridge.available()) {
             return false;
         }
-        if (DISABLED.contains(w.id)) {
-            return false;
-        }
+        // 【27.2.4-snapshot-203】不再有"永久禁用"：失败只进冷却，见 RETRY_COOLDOWN_MIN_MS 的说明。
         if (w.waterMediaForced()) {
             return true;
         }
         // 【27.2.4-201】内置后端（MJPEG / ZIP 帧序列）已随 Build 112 的内置解码器一起下线，
-        // 所以这里**不再有「改用内置后端」这条路**：能放就交给 WaterMedia，
+        // 所以这里**没有任何兜底后端了**：能放就交给 WaterMedia，
         // 放不了（mjpg/zip 等）就由渲染层画「格式不支持」占位。
         // 【27.1.3】在线源：文件名从 OnlineVideos 一个入口问（解析完扩展名才是准的）
         // 【27.1.3】无限流（直播/HLS）只能交给它拉流
@@ -89,9 +103,30 @@ public final class WaterMediaVideos {
         if (!playingHash.isEmpty()) {
             SESSION_HASHES.put(w.id.toString(), playingHash);
         }
+        // 【27.2.4-snapshot-203】源一变就当成新活：释放旧会话、清失败与冷却。
+        // 玩家改链接（尤其是从半截改成完整）之后必须能重新尝试。
+        String source = top.hmjmfabc.projector.client.media.net.OnlineVideos.streamUrl(w);
+        if (source.isEmpty()) {
+            source = "local:" + playingHash;
+        }
+        if (!source.equals(entry.lastSource)) {
+            entry.lastSource = source;
+            entry.failures = 0;
+            entry.retryAfterMs = 0L;
+            entry.lastError = "";
+            WaterMediaBridge.Session stale = entry.session;
+            entry.session = null;
+            if (stale != null) {
+                stale.release();
+                Projector.LOGGER.info("[Projector][视频] 源已变更，释放旧会话并重新尝试：{}", source);
+            }
+        }
         WaterMediaBridge.Session session = entry.session;
         if (session == null) {
-            if (!entry.loading && entry.failures < MAX_FAILURES) {
+            if (System.currentTimeMillis() < entry.retryAfterMs) {
+                return null;                    // 冷却中：画占位，别每帧重开
+            }
+            if (!entry.loading) {
                 startAsync(w, entry);
             }
             return null;
@@ -99,6 +134,14 @@ public final class WaterMediaVideos {
         if (!session.ready()) {
             // 还在连源/建解码器：让它先跑起来（start 只需调一次）
             session.start();
+            // 【27.2.4-snapshot-203】超过 3 秒还没出帧就报一次（限流），
+            // 否则玩家只看到占位块、日志里什么都没有，根本没法判断卡在哪一步。
+            long waited = session.ageMs();
+            if (waited > 3_000L && System.currentTimeMillis() - entry.lastLogMs > 5_000L) {
+                entry.lastLogMs = System.currentTimeMillis();
+                Projector.LOGGER.info("[Projector][视频] {} 已 {}ms 还没出帧（源={}，等待中）",
+                        session.name(), waited, entry.lastSource);
+            }
             // 【27.1.3】流式要解码器直接拉远程地址，有的环境/格式就是拉不动 ——
             // 超时就退回「先下载再播」，别一直卡在占位上（用户实测：流式播放没有用）。
             if (entry.streamStartedMs > 0
@@ -200,6 +243,17 @@ public final class WaterMediaVideos {
                 // 【27.1.3】无限流（直播/HLS）：没有本地文件可开，直接把地址交给它拉流
                 final String streamUrl = top.hmjmfabc.projector.client.media.net.OnlineVideos.streamUrl(w);
                 if (!streamUrl.isEmpty()) {
+                    if (!looksOpenable(streamUrl)) {
+                        // 【27.2.4-snapshot-203】源还没填好（玩家正在逐字打链接）：
+                        // 不尝试、不算失败、也不打 WARN —— 见 RETRY_COOLDOWN_MIN_MS 的说明。
+                        long now = System.currentTimeMillis();
+                        if (now - entry.lastLogMs > 5_000L) {
+                            entry.lastLogMs = now;
+                            Projector.LOGGER.info("[Projector][视频] 在线源还不完整（\"{}\"），先不尝试解码",
+                                    streamUrl);
+                        }
+                        return;                     // hadFile 保持 false ⇒ finally 里不计失败
+                    }
                     hadFile = true;                 // 有地址却打不开才算失败
                     entry.streamStartedMs = System.currentTimeMillis();
                     session = WaterMediaBridge.openRemote(streamUrl, loop);
@@ -208,7 +262,7 @@ public final class WaterMediaVideos {
                 if (file == null) {
                     // 本地还没这份文件（多人游戏里第一次看到这个控件）：
                     // 让缓存去要**整段文件**，下一帧再试。**这不算失败** ——
-                    // 以前算失败，结果下载还没开始控件就被判「打不开」而永久改用内置后端。
+                    // 以前算失败，结果下载还没开始控件就被判「打不开」而永久放弃。
                     long now = System.currentTimeMillis();
                     if (now - entry.lastMissMs > 2000L) {
                         entry.lastMissMs = now;
@@ -226,19 +280,28 @@ public final class WaterMediaVideos {
                 }
                 }
             } catch (Throwable t) {
+                entry.lastError = t.toString();
                 Projector.LOGGER.warn("[Projector][视频] WaterMedia 打开异常：{}", t.toString());
             } finally {
                 entry.loading = false;
                 if (session != null) {
                     entry.session = session;
+                    entry.failures = 0;
+                    entry.retryAfterMs = 0L;
+                    entry.lastError = "";
                 } else if (hadFile) {
-                    // 有文件却打不开才算失败（文件损坏 / 解码器不接受）
+                    // 有文件/地址却打不开才算失败（文件损坏 / 解码器不接受）
+                    // 【27.2.4-snapshot-203】改成**冷却**，不再永久禁用（见 RETRY_COOLDOWN_MIN_MS）
                     entry.failures++;
-                    if (entry.failures >= MAX_FAILURES) {
-                        DISABLED.add(w.id);
-                        Projector.LOGGER.warn("[Projector][视频] {} 连续 {} 次打不开这份视频，"
-                                + "改用内置后端重试", name, entry.failures);
+                    if (entry.lastError.isEmpty()) {
+                        entry.lastError = "解码器没有给出会话（地址或文件不被接受）";
                     }
+                    long cooldown = Math.min(RETRY_COOLDOWN_MAX_MS,
+                            RETRY_COOLDOWN_MIN_MS << Math.min(4, entry.failures - 1));
+                    entry.retryAfterMs = System.currentTimeMillis() + cooldown;
+                    Projector.LOGGER.warn("[Projector][视频] {} 第 {} 次打不开（{}），{} 秒后再试"
+                                    + "（换链接或点播放键可立刻重试）",
+                            name, entry.failures, entry.lastError, cooldown / 1000L);
                 }
             }
         }, "Projector-WaterMedia-Open");
@@ -297,13 +360,55 @@ public final class WaterMediaVideos {
         return dot < 0 || dot == name.length() - 1 ? "" : name.substring(dot + 1);
     }
 
+    /**
+     * 【27.2.4-snapshot-203】玩家明确要求"再试一次"（点了播放键 / 进编辑器确认）。
+     * 清掉失败计数与冷却，下一帧就会重新开。
+     */
+    public static void retryNow(UUID widgetId) {
+        Entry entry = widgetId == null ? null : SESSIONS.get(widgetId);
+        if (entry == null) return;
+        entry.failures = 0;
+        entry.retryAfterMs = 0L;
+        entry.lastError = "";
+        entry.lastSource = "";          // 让 textureFor 当作"源变了"，必要时释放旧会话
+        entry.lastLogMs = 0L;
+    }
+
+    /**
+     * 这个地址能不能直接交给解码器。
+     *
+     * <p>半截链接（`https://`、`https://b2`）、没有 host 的、连 URI 都解析不了的，
+     * 一律<b>不尝试</b> —— 否则玩家逐字打链接时每敲一下都算一次失败（见
+     * {@link #RETRY_COOLDOWN_MIN_MS} 注释里的复现）。</p>
+     */
+    static boolean looksOpenable(String url) {
+        if (url == null) return false;
+        String s = url.trim();
+        if (s.length() < 8 || !s.contains("://")) return false;
+        try {
+            java.net.URI uri = new java.net.URI(s);
+            String scheme = uri.getScheme();
+            if (scheme == null) return false;
+            scheme = scheme.toLowerCase(java.util.Locale.ROOT);
+            if (!scheme.equals("http") && !scheme.equals("https")) return false;
+            String host = uri.getHost();
+            if (host == null || host.isEmpty()) return false;
+            // ⚠ 只判 host 非空是不够的：`new URI("https://b2")` 会认出一个合法 host "b2"
+            //   ⇒ 玩家逐字打域名时每敲一下仍然算一次尝试（正是这个 bug 的成因）。
+            //   所以还要求它"像域名或 IP"：含 '.'（example.com / 1.2.3.4），或就是 localhost。
+            String h = host.toLowerCase(java.util.Locale.ROOT);
+            return h.indexOf('.') > 0 || h.equals("localhost");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /** 控件被删除 / 换素材时释放会话。 */
     public static void release(UUID widgetId) {
         if (widgetId != null) {
             SESSION_HASHES.remove(widgetId.toString());
         }
         Entry entry = SESSIONS.remove(widgetId);
-        DISABLED.remove(widgetId);
         if (entry != null && entry.session != null) {
             entry.session.release();
         }
@@ -317,7 +422,6 @@ public final class WaterMediaVideos {
             }
         }
         SESSIONS.clear();
-        DISABLED.clear();
         SESSION_HASHES.clear();
     }
 
@@ -365,7 +469,8 @@ public final class WaterMediaVideos {
         return "WaterMedia=" + (WaterMediaBridge.available() ? "有" : "无")
                + " 会话=" + activeCount() + " 加载中=" + SESSIONS.values().stream()
                        .filter(e -> e.loading).count()
-               + " 已禁用=" + DISABLED.size();
+               + " 冷却中=" + SESSIONS.values().stream()
+                       .filter(e -> System.currentTimeMillis() < e.retryAfterMs).count();
     }
 
 }
