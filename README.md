@@ -6,8 +6,28 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.21.1-green.svg)
 ![NeoForge](https://img.shields.io/badge/NeoForge-21.1.x-orange.svg)
+![Fabric](https://img.shields.io/badge/Fabric-1.21.1%20%2B%20Loader%200.16%2B-db8b27.svg)
 
-**当前版本：27.2（正式版）** · 仓库：<https://github.com/hmjmfabc/ProjectorMC>
+**当前版本：`27.2.4`（正式版）—— NeoForge 1.21.1 与 Fabric 1.21.1 双平台** ·
+仓库：<https://github.com/hmjmfabc/ProjectorMC>
+
+---
+
+## 支持哪些加载器
+
+**同一份模组、同样的功能、同一套平面数据格式**，按你用的加载器选一个 jar 即可：
+
+| 你玩的是 | 下这个文件 | 还需要 |
+|---|---|---|
+| **NeoForge 21.1.x**（Minecraft 1.21.1） | `projector-<版本>-all.jar` | 无 |
+| **Fabric 1.21.1** | `projector-fabric-1.21.1-<版本>-all.jar` | **Fabric Loader 0.16+** 与 **Fabric API** |
+
+- 两条线来自**同一份源码树**：Fabric 版只替换了加载器粘合层（事件、网络、配置文件、按键、Mixin 钩子），
+  玩法代码完全一致；两边配置文件名与键名也一致（`config/projector-common.toml`，键位 U / Esc / O / I）。
+- **Fabric 分支**：<https://github.com/hmjmfabc/ProjectorMC/tree/1.21.1-Fabric>
+  （源码、Fabric 版更新日志、移植说明与审查记录都在那里）。
+- **两个 jar 不要同时装**；联机时客户端与服务端必须用**同一加载器 + 同一版本**。
+- 始终使用 **`-all`** jar：它内含音乐控件需要的音频解码库。
 
 ---
 
@@ -34,7 +54,7 @@
 | 外观 | 所有控件可无极调字号、旋转、透明度、层级；文本控件还有「**打字**」动画；音乐与棋盘支持**分部位调色**（进度色 / 边框色 / 格线色 / 棋盘底色 / 最后一手） |
 | 棋类 | 井字棋、五子棋、象棋、围棋、国际象棋；人机 / 双人 / 斗蛐蛐（AI 自走）；三档 AI |
 | 联机 | 服务端权威数据、SHA-1 哈希校验与本地缓存复用、上传下载限速、日出站流量上限、两侧对称的传输日志 |
-| 平台 | 兼容 Android 触控启动器（FCL / PojavLauncher）与桌面端；**支持专用服务端（Dedicated Server）** |
+| 平台 | **NeoForge 21.1.x 与 Fabric 1.21.1 双平台**；兼容 Android 触控启动器（FCL / PojavLauncher）与桌面端；**支持专用服务端（Dedicated Server）** |
 
 完整玩法说明见 **[PROJECTOR_GUIDE.md](PROJECTOR_GUIDE.md)**；
 **27.2 相对 27.1.3 的全部改动**见 **[CHANGELOG-27.2.md](CHANGELOG-27.2.md)**；
@@ -42,13 +62,16 @@
 
 ## 安装
 
-1. 安装 **NeoForge 21.1.x**（Minecraft **1.21.1**）。
-2. 把 `projector-<版本>-all.jar` 放进 `mods/` 文件夹。
+1. 安装加载器（Minecraft **1.21.1**）：
+   - **NeoForge 21.1.x** → 用 `projector-<版本>-all.jar`；
+   - **Fabric Loader 0.16+** → 用 `projector-fabric-1.21.1-<版本>-all.jar`，并再装 **Fabric API**。
+2. 把对应的 `-all.jar` 放进 `mods/` 文件夹。
    - **必须用 `-all.jar`**：它里面有 Jar-in-Jar 打包的音频解码库（mp3spi / jlayer /
      tritonus-share / javasound-aac / jflac），缺少它们音乐控件无法解码音频。
    - 可选前置：**WaterMedia**（视频）、**MCEF**（网页）。没装时对应控件的入口是灰的、
      界面会明确说明，不会「选了却放不出来」。
-3. 联机时**客户端与服务端都要安装同一版本**（数据模型是服务端权威）。
+3. 联机时**客户端与服务端都要安装**（数据模型是服务端权威），且**加载器与版本都一致**——
+   NeoForge 服务端配 NeoForge 客户端，Fabric 服务端配 Fabric 客户端。
 
 ## 从源码构建
 
@@ -60,21 +83,36 @@ mkdir -p libs            # 音乐控件要的两个解码库（见下）
 ./gradlew build          # 需要 JDK 21；首次会联网拉取 NeoForge 依赖与 mp3spi
 ```
 
+**Fabric 1.21.1 版**在另一个分支，工程自带 Gradle 包装器（Gradle 9.8 + Fabric Loom 1.17.21）：
+
+```bash
+git clone -b 1.21.1-Fabric https://github.com/hmjmfabc/ProjectorMC.git
+cd ProjectorMC && mkdir -p libs && ./gradlew build
+# 产物：build/libs/projector-fabric-1.21.1-<版本>-all.jar
+```
+
+⚠ 两条线的 `gradle/wrapper` 版本不同（上游 9.2.1 / Fabric 9.8），别互相覆盖。
+
 音乐控件用到两个第三方解码库：`mp3spi`（含 jlayer / tritonus-share，Gradle 会从
 Maven Central 自动下载）与 `jflac-codec`（**不进仓库**，需自行放进 `libs/`，来源见 [NOTICE](NOTICE)）。
 缺少它们时**仍然能编译运行**，只是音乐控件无法解码音频。
 视频与网页**不需要任何编译期依赖**（WaterMedia / MCEF 都是运行期可选前置，只按公开 API 名字反射调用）。
 
-> ⚠ **不要再把 `javasound-aac`（AAC/M4A 解码）加回来**：它和内置 JCodec 自带的那份
-> `net.sourceforge.jaad.*` 是**同名包**，两个 jar-in-jar 库导出同一个 JPMS 包会让
-> ModLauncher 在**启动阶段**直接崩（`java.lang.module.ResolutionException`）。
-> 因此音频格式只有 **MP3 / FLAC / WAV**。
+> **AAC / M4A 自 Build 112 起恢复**：当年的冲突源（JCodec 自带的 `net.sourceforge.jaad.*`）
+> 已随内置视频解码器一起删除，所以 `javasound-aac` 可以重新嵌进来。
+> **但规矩不变**：以后每嵌一个 jar 之前，必须先算一遍「两个库有没有同名包」——
+> 两个 jar-in-jar 库导出同一个 JPMS 包会让 ModLauncher 在**启动阶段**直接崩
+> （`java.lang.module.ResolutionException`）。
 
 产物：
 
 ```
-build/libs/projector-<版本>-all.jar   ← 发布用的完整包（含 JCodec）
+build/libs/projector-<版本>-all.jar   ← 发布用的完整包（含全部 jar-in-jar 依赖）
 build/libs/projector-<版本>.jar       ← 不含依赖，不要用于安装
+```
+
+`-all` 里嵌的库：mp3spi / jlayer / tritonus-share（MP3）、javasound-aac（AAC / M4A）、
+jflac（FLAC）、zxing core（扫码登录）。少任何一个都会让对应功能在运行时缺类。
 ```
 
 ## 版本号规则
@@ -88,6 +126,9 @@ build/libs/projector-<版本>.jar       ← 不含依赖，不要用于安装
 
 除正式版外，每构建一次 Build 号 +1。
 
+当前：**NeoForge 线 `27.2.4`（正式版）**，**Fabric 线 `27.2.4`（正式版）**（同号，靠文件名里的
+`fabric` 区分）；两条线各自递增，互不影响。
+
 ## 目录结构
 
 ```
@@ -97,6 +138,10 @@ src/main/java/top/hmjmfabc/projector/   模组源码
   server/    服务端存储、权限、出站计量、字体核验
   network/   网络包与处理
 src/main/resources/                     资源（语言文件、模组图标、天气图标、mods.toml）
+
+# ↓ 以下两个包只存在于 1.21.1-Fabric 分支（NeoForge 线上没有）
+compat/    NeoForge API 的替身（事件总线 / TOML 配置 / 网络 / ModList / Dist / 崩溃报告）
+fabric/    Fabric 入口、事件桥、网络登记、Mixin 钩子（输入 / 屏幕 / 聊天 / 交互 / 崩溃报告）
   assets/projector/font/                字体目录（**仓库不含字体文件**，见下方说明）
 tmp/                                    纯逻辑验证脚本（可直接用 JDK 跑，见下）
 logo/                                   模组图标源文件
@@ -145,7 +190,7 @@ bash tmp/run-all.sh                  # 跑全部套件
   （MIT 许可）。**只有音乐模块引用了该项目**，其余功能均为本项目独立实现。
 - **`assets/projector/font/` 下的字体**：版权归各自作者，**不在**本项目的 Apache-2.0 授权范围内；
   再分发前请自行确认其授权条款。
-- Minecraft、NeoForge 及其标识归各自所有者；本项目与 Mojang / Microsoft 无关联。
+- Minecraft、NeoForge、Fabric 及其标识归各自所有者；本项目与 Mojang / Microsoft 无关联。
 
 ## 鸣谢
 
